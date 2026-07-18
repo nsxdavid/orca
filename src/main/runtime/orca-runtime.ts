@@ -119,6 +119,10 @@ import type {
   WorktreeRemoteBranchConflictEvent,
   WorktreeStartupLaunch,
   LinearCustomViewModel,
+  ClickUpCreateTaskArgs,
+  ClickUpTaskFilter,
+  ClickUpTaskReadPriority,
+  ClickUpTaskUpdate,
   JiraConnectArgs,
   JiraCreateIssueArgs,
   JiraIssueFilter,
@@ -580,6 +584,47 @@ import {
   searchIssues as searchJiraIssues,
   updateIssue as updateJiraIssue
 } from '../jira/issues'
+import {
+  connect as connectClickUp,
+  disconnect as disconnectClickUp,
+  getStatus as getClickUpStatus,
+  selectWorkspace as selectClickUpWorkspace,
+  testConnection as testClickUpConnection
+} from '../clickup/client'
+import { listAssignableMembers as listClickUpAssignableMembers } from '../clickup/assignable-members'
+import {
+  listFolderLists as listClickUpFolderLists,
+  listFolderlessLists as listClickUpFolderlessLists,
+  listFolders as listClickUpFolders,
+  listSpaceTags as listClickUpSpaceTags,
+  listSpaces as listClickUpSpaces
+} from '../clickup/hierarchy'
+import {
+  addCommentReply as addClickUpCommentReply,
+  addTaskComment as addClickUpTaskComment,
+  getCommentReplies as getClickUpCommentReplies,
+  getTaskComments as getClickUpTaskComments
+} from '../clickup/task-comments'
+import {
+  createTask as createClickUpTask,
+  getTask as getClickUpTask,
+  listTaskTypes as listClickUpTaskTypes,
+  listTasks as listClickUpTasks,
+  searchTasks as searchClickUpTasks,
+  updateTask as updateClickUpTask
+} from '../clickup/tasks'
+import {
+  listTaskPage as listClickUpTaskPage,
+  listTaskSubtasks as listClickUpTaskSubtasks
+} from '../clickup/task-page-reads'
+import {
+  listViews as listClickUpViews,
+  listViewTaskPage as listClickUpViewTaskPage
+} from '../clickup/views'
+import {
+  addTaskTag as addClickUpTaskTag,
+  removeTaskTag as removeClickUpTaskTag
+} from '../clickup/task-tags'
 import {
   clearProjectItemFieldValue,
   getProjectViewTable,
@@ -25819,6 +25864,197 @@ export class OrcaRuntimeService {
 
   jiraListTransitions(key: string, siteId?: string): ReturnType<typeof listJiraTransitions> {
     return listJiraTransitions(key, siteId)
+  }
+
+  // ── ClickUp integration ──
+
+  clickUpConnect(apiToken: string): ReturnType<typeof connectClickUp> {
+    return connectClickUp({ apiToken })
+  }
+
+  clickUpDisconnect(): { ok: true } {
+    disconnectClickUp()
+    return { ok: true }
+  }
+
+  clickUpSelectWorkspace(workspaceId: string): ReturnType<typeof getClickUpStatus> {
+    return selectClickUpWorkspace(workspaceId)
+  }
+
+  clickUpStatus(): ReturnType<typeof getClickUpStatus> {
+    return getClickUpStatus()
+  }
+
+  clickUpTestConnection(): ReturnType<typeof testClickUpConnection> {
+    return testClickUpConnection()
+  }
+
+  clickUpListSpaces(workspaceId: string): ReturnType<typeof listClickUpSpaces> {
+    return listClickUpSpaces(workspaceId)
+  }
+
+  clickUpListFolders(spaceId: string, workspaceId?: string): ReturnType<typeof listClickUpFolders> {
+    return listClickUpFolders(spaceId, workspaceId)
+  }
+
+  clickUpListSpaceTags(
+    spaceId: string,
+    workspaceId?: string
+  ): ReturnType<typeof listClickUpSpaceTags> {
+    return listClickUpSpaceTags(spaceId, workspaceId)
+  }
+
+  clickUpListFolderlessLists(
+    spaceId: string,
+    workspaceId?: string
+  ): ReturnType<typeof listClickUpFolderlessLists> {
+    return listClickUpFolderlessLists(spaceId, workspaceId)
+  }
+
+  clickUpListFolderLists(
+    folderId: string,
+    spaceId: string,
+    workspaceId?: string
+  ): ReturnType<typeof listClickUpFolderLists> {
+    return listClickUpFolderLists(folderId, spaceId, workspaceId)
+  }
+
+  clickUpListAssignableMembers(
+    listId: string,
+    workspaceId?: string
+  ): ReturnType<typeof listClickUpAssignableMembers> {
+    return listClickUpAssignableMembers(listId, workspaceId)
+  }
+
+  clickUpListTasks(
+    listId: string,
+    filter?: ClickUpTaskFilter,
+    limit = 30,
+    workspaceId?: string
+  ): ReturnType<typeof listClickUpTasks> {
+    return listClickUpTasks(listId, filter, Math.max(1, limit), workspaceId)
+  }
+
+  clickUpListViews(listId: string, workspaceId?: string): ReturnType<typeof listClickUpViews> {
+    return listClickUpViews(listId, workspaceId)
+  }
+
+  clickUpListViewTaskPage(
+    viewId: string,
+    listId: string,
+    page = 0,
+    workspaceId?: string
+  ): ReturnType<typeof listClickUpViewTaskPage> {
+    return listClickUpViewTaskPage(viewId, listId, Math.max(0, Math.floor(page)), workspaceId)
+  }
+
+  clickUpListTaskPage(
+    listId: string,
+    filter?: ClickUpTaskFilter,
+    page = 0,
+    workspaceId?: string,
+    includeSubtasks = false
+  ): ReturnType<typeof listClickUpTaskPage> {
+    return listClickUpTaskPage(
+      listId,
+      filter,
+      Math.max(0, Math.floor(page)),
+      workspaceId,
+      includeSubtasks
+    )
+  }
+
+  clickUpListTaskSubtasks(
+    taskId: string,
+    listId: string,
+    filter: ClickUpTaskFilter = 'open',
+    page = 0,
+    workspaceId?: string,
+    priority?: ClickUpTaskReadPriority
+  ): ReturnType<typeof listClickUpTaskSubtasks> {
+    return listClickUpTaskSubtasks(taskId, listId, filter, page, workspaceId, priority)
+  }
+
+  clickUpSearchTasks(
+    listId: string,
+    query: string,
+    limit = 30,
+    workspaceId?: string
+  ): ReturnType<typeof searchClickUpTasks> {
+    return searchClickUpTasks(listId, query, Math.max(1, limit), workspaceId)
+  }
+
+  clickUpGetTask(
+    taskId: string,
+    listId: string,
+    workspaceId?: string
+  ): ReturnType<typeof getClickUpTask> {
+    return getClickUpTask(taskId, listId, workspaceId)
+  }
+
+  clickUpListTaskTypes(workspaceId?: string): ReturnType<typeof listClickUpTaskTypes> {
+    return listClickUpTaskTypes(workspaceId)
+  }
+
+  clickUpCreateTask(
+    args: ClickUpCreateTaskArgs,
+    workspaceId?: string
+  ): ReturnType<typeof createClickUpTask> {
+    return createClickUpTask(args, workspaceId)
+  }
+
+  clickUpUpdateTask(
+    taskId: string,
+    updates: ClickUpTaskUpdate,
+    workspaceId?: string
+  ): ReturnType<typeof updateClickUpTask> {
+    return updateClickUpTask(taskId, updates, workspaceId)
+  }
+
+  clickUpAddTaskTag(
+    taskId: string,
+    tagName: string,
+    workspaceId?: string
+  ): ReturnType<typeof addClickUpTaskTag> {
+    return addClickUpTaskTag(taskId, tagName, workspaceId)
+  }
+
+  clickUpRemoveTaskTag(
+    taskId: string,
+    tagName: string,
+    workspaceId?: string
+  ): ReturnType<typeof removeClickUpTaskTag> {
+    return removeClickUpTaskTag(taskId, tagName, workspaceId)
+  }
+
+  clickUpAddTaskComment(
+    taskId: string,
+    body: string,
+    workspaceId?: string
+  ): ReturnType<typeof addClickUpTaskComment> {
+    return addClickUpTaskComment(taskId, body, workspaceId)
+  }
+
+  clickUpTaskComments(
+    taskId: string,
+    workspaceId?: string
+  ): ReturnType<typeof getClickUpTaskComments> {
+    return getClickUpTaskComments(taskId, workspaceId)
+  }
+
+  clickUpAddCommentReply(
+    commentId: string,
+    body: string,
+    workspaceId?: string
+  ): ReturnType<typeof addClickUpCommentReply> {
+    return addClickUpCommentReply(commentId, body, workspaceId)
+  }
+
+  clickUpCommentReplies(
+    commentId: string,
+    workspaceId?: string
+  ): ReturnType<typeof getClickUpCommentReplies> {
+    return getClickUpCommentReplies(commentId, workspaceId)
   }
 
   jiraGetProjectStatusOrder(

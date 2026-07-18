@@ -337,13 +337,14 @@ export type FolderWorkspace = {
 }
 
 export type FolderWorkspaceLinkedTask = {
-  provider: 'github' | 'gitlab' | 'linear' | 'jira'
+  provider: 'github' | 'gitlab' | 'linear' | 'jira' | 'clickup'
   type: 'issue' | 'pr' | 'mr'
   number: number
   title: string
   url: string
   linearIdentifier?: string
   jiraIdentifier?: string
+  clickUpIdentifier?: string
   repoId?: string
 }
 
@@ -1920,6 +1921,37 @@ export type {
   JiraViewer
 } from './jira-types'
 
+export type {
+  ClickUpComment,
+  ClickUpConnectArgs,
+  ClickUpConnectionStatus,
+  ClickUpCreateTaskArgs,
+  ClickUpCreateTaskResult,
+  ClickUpFolder,
+  ClickUpList,
+  ClickUpListViews,
+  ClickUpMutationResult,
+  ClickUpPriority,
+  ClickUpSpace,
+  ClickUpStatus,
+  ClickUpTag,
+  ClickUpTask,
+  ClickUpTaskFilter,
+  ClickUpTaskPage,
+  ClickUpTaskReadPriority,
+  ClickUpTaskType,
+  ClickUpTaskUpdate,
+  ClickUpUser,
+  ClickUpViewer,
+  ClickUpView,
+  ClickUpViewColumn,
+  ClickUpViewConfiguration,
+  ClickUpViewDirection,
+  ClickUpViewGrouping,
+  ClickUpViewSortField,
+  ClickUpWorkspace
+} from './clickup-types'
+
 /**
  * GitHub API rate-limit buckets surfaced in the TaskPage header so users can
  * see remaining budget before they hit the wall. `core` = REST (5000/hr),
@@ -2870,6 +2902,9 @@ export type GlobalSettings = {
   /** Why: one-shot migration guard so Jira becomes visible for existing
    *  profiles once, without re-adding it after a later deliberate opt-out. */
   visibleTaskProvidersDefaultedForJira: boolean
+  /** Why: one-shot migration guard so ClickUp becomes visible for existing
+   *  profiles once, without re-adding it after a later deliberate opt-out. */
+  visibleTaskProvidersDefaultedForClickUp: boolean
   /** Why: persists the user's repo selection in the cross-repo tasks view.
    *  `null` means sticky-all — every eligible repo is selected, including
    *  repos added in future sessions, so the "All repos" label stays
@@ -3287,6 +3322,21 @@ export type TaskResumeState = {
   }
   jiraPreset?: 'assigned' | 'reported' | 'all' | 'done'
   jiraQuery?: string
+  clickUpWorkspaceId?: string
+  clickUpSpaceId?: string
+  clickUpListId?: string
+  clickUpViewId?: string
+  clickUpQuery?: string
+  clickUpSubtaskMode?: 'collapsed' | 'expanded' | 'separate'
+  clickUpGroupDirection?: 'ascending' | 'descending'
+  /** Why: retained so persisted flat/tree preferences can migrate to subtask presentation. */
+  clickUpViewMode?: 'flat' | 'tree'
+  clickUpGrouping?: 'none' | 'status' | 'priority' | 'type' | 'tag'
+  clickUpOrdering?: 'updated' | 'priority' | 'identity'
+  clickUpShowClosedTasks?: boolean
+  clickUpDisplayProperties?: ('type' | 'status' | 'priority' | 'tags' | 'assignees' | 'updated')[]
+  clickUpExpandedTaskContextKey?: string
+  clickUpExpandedTaskIds?: string[]
 }
 
 export type RightSidebarTab =

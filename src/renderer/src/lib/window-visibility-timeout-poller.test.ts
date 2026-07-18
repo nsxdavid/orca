@@ -119,4 +119,35 @@ describe('installWindowVisibilityTimeoutPoller', () => {
     expect(setTimeoutMock).toHaveBeenCalledTimes(1)
     cleanup()
   })
+
+  it('can schedule the first poll without immediately running it', () => {
+    const windowListeners = new Map<string, () => void>()
+    const run = vi.fn()
+    const setTimeoutMock = vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>)
+
+    vi.stubGlobal('window', {
+      addEventListener: vi.fn((event: string, listener: () => void) => {
+        windowListeners.set(event, listener)
+      }),
+      removeEventListener: vi.fn()
+    })
+    vi.stubGlobal('document', {
+      visibilityState: 'visible',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn()
+    })
+
+    const cleanup = installWindowVisibilityTimeoutPoller({
+      run,
+      getDelayMs: () => 3000,
+      runImmediately: false,
+      setTimeoutFn: setTimeoutMock
+    })
+
+    expect(run).not.toHaveBeenCalled()
+    expect(setTimeoutMock).toHaveBeenCalledWith(expect.any(Function), 3000)
+    windowListeners.get('focus')?.()
+    expect(run).toHaveBeenCalledTimes(1)
+    cleanup()
+  })
 })

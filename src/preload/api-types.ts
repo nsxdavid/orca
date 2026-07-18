@@ -148,6 +148,22 @@ import type {
   JiraTransition,
   JiraUser,
   JiraViewer,
+  ClickUpComment,
+  ClickUpConnectionStatus,
+  ClickUpCreateTaskArgs,
+  ClickUpFolder,
+  ClickUpList,
+  ClickUpListViews,
+  ClickUpSpace,
+  ClickUpTag,
+  ClickUpTask,
+  ClickUpTaskFilter,
+  ClickUpTaskPage,
+  ClickUpTaskReadPriority,
+  ClickUpTaskType,
+  ClickUpTaskUpdate,
+  ClickUpUser,
+  ClickUpViewer,
   LinearViewer,
   LinearCollectionResult,
   LinearConnectionStatus,
@@ -2106,6 +2122,100 @@ export type PreloadApi = {
       projectKey: string
       siteId?: string
     }) => Promise<JiraProjectStatusOrder>
+  }
+  clickup: {
+    connect: (args: {
+      apiToken: string
+    }) => Promise<{ ok: true; viewer: ClickUpViewer } | { ok: false; error: string }>
+    disconnect: () => Promise<void>
+    selectWorkspace: (args: { workspaceId: string }) => Promise<ClickUpConnectionStatus>
+    status: () => Promise<ClickUpConnectionStatus>
+    testConnection: () => Promise<
+      { ok: true; viewer: ClickUpViewer } | { ok: false; error: string }
+    >
+    listSpaces: (args: { workspaceId: string }) => Promise<ClickUpSpace[]>
+    listFolders: (args: { spaceId: string; workspaceId?: string }) => Promise<ClickUpFolder[]>
+    listSpaceTags: (args: { spaceId: string; workspaceId?: string }) => Promise<ClickUpTag[]>
+    listTaskTypes: (args?: { workspaceId?: string }) => Promise<ClickUpTaskType[]>
+    listAssignableMembers: (args: {
+      listId: string
+      workspaceId?: string
+    }) => Promise<ClickUpUser[]>
+    listFolderlessLists: (args: { spaceId: string; workspaceId?: string }) => Promise<ClickUpList[]>
+    listFolderLists: (args: {
+      folderId: string
+      spaceId: string
+      workspaceId?: string
+    }) => Promise<ClickUpList[]>
+    listTasks: (args: {
+      listId: string
+      filter?: ClickUpTaskFilter
+      limit?: number
+      workspaceId?: string
+    }) => Promise<ClickUpTask[]>
+    listViews: (args: { listId: string; workspaceId?: string }) => Promise<ClickUpListViews>
+    listViewTaskPage: (args: {
+      viewId: string
+      listId: string
+      page?: number
+      workspaceId?: string
+    }) => Promise<ClickUpTaskPage>
+    listTaskPage: (args: {
+      listId: string
+      filter?: ClickUpTaskFilter
+      page?: number
+      workspaceId?: string
+      includeSubtasks?: boolean
+    }) => Promise<ClickUpTaskPage>
+    listTaskSubtasks: (args: {
+      taskId: string
+      listId: string
+      filter?: ClickUpTaskFilter
+      page?: number
+      workspaceId?: string
+      priority?: ClickUpTaskReadPriority
+    }) => Promise<ClickUpTaskPage>
+    searchTasks: (args: {
+      listId: string
+      query: string
+      limit?: number
+      workspaceId?: string
+    }) => Promise<ClickUpTask[]>
+    getTask: (args: {
+      taskId: string
+      listId: string
+      workspaceId?: string
+    }) => Promise<ClickUpTask | null>
+    createTask: (
+      args: ClickUpCreateTaskArgs & { workspaceId?: string }
+    ) => Promise<{ ok: true; id: string; url: string } | { ok: false; error: string }>
+    updateTask: (args: {
+      taskId: string
+      updates: ClickUpTaskUpdate
+      workspaceId?: string
+    }) => Promise<{ ok: true } | { ok: false; error: string }>
+    addTaskTag: (args: {
+      taskId: string
+      tagName: string
+      workspaceId?: string
+    }) => Promise<{ ok: true } | { ok: false; error: string }>
+    removeTaskTag: (args: {
+      taskId: string
+      tagName: string
+      workspaceId?: string
+    }) => Promise<{ ok: true } | { ok: false; error: string }>
+    addTaskComment: (args: {
+      taskId: string
+      body: string
+      workspaceId?: string
+    }) => Promise<{ ok: true; id: string } | { ok: false; error: string }>
+    taskComments: (args: { taskId: string; workspaceId?: string }) => Promise<ClickUpComment[]>
+    addCommentReply: (args: {
+      commentId: string
+      body: string
+      workspaceId?: string
+    }) => Promise<{ ok: true; id: string } | { ok: false; error: string }>
+    commentReplies: (args: { commentId: string; workspaceId?: string }) => Promise<ClickUpComment[]>
   }
   starNag: {
     onShow: (

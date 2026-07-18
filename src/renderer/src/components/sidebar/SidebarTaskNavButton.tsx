@@ -1,5 +1,6 @@
 import React from 'react'
 import { EyeOff, Github, Gitlab, List } from 'lucide-react'
+import { ClickUpIcon } from '@/components/icons/ClickUpIcon'
 import { JiraIcon } from '@/components/icons/JiraIcon'
 import { LinearIcon } from '@/components/icons/LinearIcon'
 import {
@@ -72,7 +73,7 @@ export function SidebarTaskNavButton(): React.JSX.Element | null {
   const activeView = useAppStore((s) => s.activeView)
   const repos = useAppStore((s) => s.repos)
   const repoMap = useRepoMap()
-  const canBrowseTasks = repos.some((repo) => isGitRepoKind(repo))
+  const hasGitRepoTasks = repos.some((repo) => isGitRepoKind(repo))
   const showTasksButton = useAppStore((s) => s.settings?.showTasksButton !== false)
   const rawVisibleTaskProviders = useAppStore((s) => s.settings?.visibleTaskProviders)
   const defaultTaskSource = useAppStore((s) => s.settings?.defaultTaskSource ?? 'github')
@@ -116,6 +117,11 @@ export function SidebarTaskNavButton(): React.JSX.Element | null {
     () => resolveVisibleTaskProvider(defaultTaskSource, visibleTaskProviders),
     [defaultTaskSource, visibleTaskProviders]
   )
+  const canBrowseTasks =
+    hasGitRepoTasks ||
+    visibleTaskProviders.includes('linear') ||
+    visibleTaskProviders.includes('jira') ||
+    visibleTaskProviders.includes('clickup')
 
   React.useEffect(() => {
     if (!preflightStatusChecked || !preflightStatusCurrent) {
@@ -245,6 +251,18 @@ export function SidebarTaskNavButton(): React.JSX.Element | null {
                 onOpen={() => openTaskPage({ taskSource: 'jira' })}
               >
                 <JiraIcon className="size-3.5" />
+              </TaskProviderShortcut>
+            ) : null}
+            {visibleTaskProviders.includes('clickup') ? (
+              <TaskProviderShortcut
+                canBrowseTasks={canBrowseTasks}
+                label={translate(
+                  'auto.components.sidebar.SidebarNav.clickupOpen',
+                  'Open ClickUp tasks'
+                )}
+                onOpen={() => openTaskPage({ taskSource: 'clickup' })}
+              >
+                <ClickUpIcon className="size-3.5" />
               </TaskProviderShortcut>
             ) : null}
           </span>

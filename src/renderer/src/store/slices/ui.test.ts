@@ -1581,7 +1581,21 @@ describe('createUISlice hydratePersistedUI', () => {
           linearPreset: 'completed',
           linearQuery: 'label:bug',
           jiraPreset: 'reported',
-          jiraQuery: 99
+          jiraQuery: 99,
+          clickUpWorkspaceId: 'workspace-1',
+          clickUpSpaceId: 'space-1',
+          clickUpListId: 'list-1',
+          clickUpViewId: 'view-1',
+          clickUpQuery: 'bug',
+          clickUpSubtaskMode: 'expanded',
+          clickUpGroupDirection: 'descending',
+          clickUpViewMode: 'tree',
+          clickUpGrouping: 'status',
+          clickUpOrdering: 'priority',
+          clickUpShowClosedTasks: true,
+          clickUpDisplayProperties: ['status', 'bad', 'priority', 'status'],
+          clickUpExpandedTaskContextKey: 'source:list-1:open',
+          clickUpExpandedTaskIds: ['task-1', 123, 'task-1']
         } as unknown as PersistedUIState['taskResumeState']
       })
     )
@@ -1590,7 +1604,21 @@ describe('createUISlice hydratePersistedUI', () => {
       githubMode: 'project',
       linearPreset: 'completed',
       linearQuery: 'label:bug',
-      jiraPreset: 'reported'
+      jiraPreset: 'reported',
+      clickUpWorkspaceId: 'workspace-1',
+      clickUpSpaceId: 'space-1',
+      clickUpListId: 'list-1',
+      clickUpViewId: 'view-1',
+      clickUpQuery: 'bug',
+      clickUpSubtaskMode: 'expanded',
+      clickUpGroupDirection: 'descending',
+      clickUpViewMode: 'tree',
+      clickUpGrouping: 'status',
+      clickUpOrdering: 'priority',
+      clickUpShowClosedTasks: true,
+      clickUpDisplayProperties: ['status', 'priority'],
+      clickUpExpandedTaskContextKey: 'source:list-1:open',
+      clickUpExpandedTaskIds: ['task-1']
     })
   })
 

@@ -3,6 +3,7 @@ task source controls, and GitHub task list co-located so the wiring between the
 selected repo, the task filters, and the work-item list stays readable in one
 place while this surface is still evolving. */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { useTranslation } from 'react-i18next'
 import { useShallow } from 'zustand/react/shallow'
 import {
@@ -17,12 +18,15 @@ import {
   ChevronRight,
   CircleDot,
   Clock3,
+  Columns3,
   Copy,
   EllipsisVertical,
   ExternalLink,
   Eye,
   Files,
+  Flag,
   GitMerge,
+  GitBranch,
   GitPullRequest,
   GitPullRequestDraft,
   List,
@@ -152,6 +156,58 @@ import {
   type ExecutionHostRegistryEntry
 } from '../../../shared/execution-host-registry'
 import { getHostDisplayLabelOverrides } from '../../../shared/host-setting-overrides'
+import ClickUpTaskWorkspace from '@/components/ClickUpTaskWorkspace'
+import ClickUpCreateTaskDialog from '@/components/ClickUpCreateTaskDialog'
+import { useClickUpTaskSync } from '@/components/use-clickup-task-sync'
+import { useClickUpListViews } from '@/components/use-clickup-list-views'
+import { ClickUpSavedViewSelect } from '@/components/clickup-saved-view-select'
+import {
+  ClickUpListLayoutControls,
+  type ClickUpGroupDirection,
+  type ClickUpGrouping,
+  type ClickUpSubtaskMode
+} from '@/components/clickup-list-layout-controls'
+import { getSelectableClickUpSavedViews } from '@/components/clickup-saved-view-selection'
+import {
+  CLICKUP_DISPLAY_PROPERTIES,
+  getClickUpSavedViewLayout,
+  type ClickUpDisplayProperty,
+  type ClickUpOrdering
+} from '@/components/clickup-saved-view-layout'
+import ClickUpAssigneeEditor from '@/components/clickup-assignee-editor'
+import { toggleClickUpAssignee } from '@/components/clickup-assignee-selection'
+import {
+  preserveClickUpCreatedSubtaskPlacement,
+  upsertClickUpCreatedSubtask
+} from '@/components/clickup-created-subtask'
+import {
+  ClickUpColumnResizeRails,
+  ClickUpResizableHeaderCell,
+  type ClickUpResizableColumn
+} from '@/components/clickup-column-resize'
+import { getClickUpResizedColumnWidth } from '@/components/clickup-column-width'
+import { isClickUpColdRefreshGesture } from '@/components/clickup-refresh-gesture'
+import { applyClickUpTaskTypeNames } from '@/components/clickup-task-type-names'
+import {
+  createClickUpTreeExpansionState,
+  getClickUpTreeExpandedIds,
+  getClickUpTreeExpansionContextKey,
+  resolveClickUpTreeExpansionContext,
+  updateClickUpTreeExpansion,
+  type ClickUpTreeExpansionUpdate
+} from '@/components/clickup-tree-expansion-state'
+import {
+  canExpandClickUpTask,
+  filterClickUpTasksByClosedVisibility,
+  getClickUpExpandedTaskIdsNeedingChildLoad,
+  getClickUpExpandableTaskIds,
+  getClickUpGroupedTaskRows,
+  getClickUpTaskRows,
+  isClickUpTaskChildMetadataPending,
+  shouldLoadClickUpTaskChildren,
+  type ClickUpTaskGroup,
+  type ClickUpTaskTreeRow
+} from '@/components/clickup-task-tree'
 import LinearIssueWorkspace from '@/components/LinearIssueWorkspace'
 import {
   LinearCollectionNotice,
@@ -159,6 +215,7 @@ import {
   LinearProjectOverview,
   LinearProjectTable
 } from '@/components/linear-project-view-surfaces'
+import { ClickUpIcon } from '@/components/icons/ClickUpIcon'
 import JiraIssueWorkspace from '@/components/JiraIssueWorkspace'
 import { TaskPageJiraIssueList } from '@/components/task-page-jira-issue-list'
 import {
@@ -171,6 +228,7 @@ import { cn } from '@/lib/utils'
 import {
   getLinkedWorkItemSuggestedName,
   getLinkedWorkItemWorkspaceName,
+  getClickUpTaskWorkspaceName,
   getTaskPresetQuery,
   PER_REPO_FETCH_LIMIT,
   CROSS_REPO_DISPLAY_LIMIT
@@ -289,6 +347,11 @@ import type {
   JiraIssue,
   JiraIssueType,
   JiraProject,
+  ClickUpList,
+  ClickUpSpace,
+  ClickUpTask,
+  ClickUpTaskType,
+  ClickUpUser,
   JiraProjectStatusOrder,
   JiraPriority,
   LinearIssue,
@@ -333,6 +396,7 @@ import {
   jiraListProjects,
   jiraListPriorities
 } from '@/runtime/runtime-jira-client'
+import { clickUpCreateTask } from '@/runtime/runtime-clickup-client'
 import {
   sortJiraIssues,
   type JiraIssueSortColumn,
@@ -384,6 +448,10 @@ function isGitLabIssueFilter(
 const TASK_SEARCH_DEBOUNCE_MS = 300
 const LINEAR_ITEM_LIMIT = 36
 const JIRA_ITEM_LIMIT = 50
+const CLICKUP_TASK_ROW_ESTIMATE = 44
+const CLICKUP_TASK_ROW_OVERSCAN = 10
+// Group headers stay full-width while their task content nests beneath the header label.
+const CLICKUP_GROUPED_ROW_INSET = 28
 const PR_CHECKS_EAGER_PREFETCH_LIMIT = 20
 
 const GITHUB_TASK_GRID_CLASS =
@@ -394,6 +462,107 @@ const GITHUB_TASK_ROW_SURFACE_CLASS =
   '[background:color-mix(in_srgb,var(--muted)_50%,var(--background))]'
 const GITHUB_TASK_ROW_HOVER_SURFACE_CLASS =
   'group-hover/github-task-row:[background:color-mix(in_srgb,var(--muted)_70%,var(--background))]'
+
+type ClickUpViewMode = 'flat' | 'tree'
+
+type ClickUpListStatus = NonNullable<ClickUpList['statuses']>[number]
+
+type ClickUpTaskTypeOption = ClickUpTaskType
+
+type ClickUpPriorityOption = {
+  value: number
+  key: 'urgent' | 'high' | 'normal' | 'low'
+  color: string
+}
+
+type ClickUpInlineSubtaskDraft = {
+  parentTaskId: string
+  title: string
+  status: string
+  priority: string
+  taskTypeId: string
+  tagNames: string[]
+  assigneeIds: string[]
+}
+
+type ClickUpColumnWidths = {
+  type: number
+  status: number
+  priority: number
+  tags: number
+  assignees: number
+  updated: number
+}
+
+const CLICKUP_DEFAULT_COLUMN_WIDTHS: ClickUpColumnWidths = {
+  type: 116,
+  status: 136,
+  priority: 92,
+  tags: 180,
+  assignees: 140,
+  updated: 116
+}
+
+const CLICKUP_COLUMN_MIN_WIDTHS: ClickUpColumnWidths = {
+  type: 72,
+  status: 80,
+  priority: 64,
+  tags: 80,
+  assignees: 72,
+  updated: 80
+}
+
+const CLICKUP_COLUMN_MAX_WIDTHS: ClickUpColumnWidths = {
+  type: 640,
+  status: 640,
+  priority: 640,
+  tags: 640,
+  assignees: 640,
+  updated: 640
+}
+
+function getClickUpSavedViewColumnWidths(
+  widths: Partial<Record<ClickUpDisplayProperty, number>>
+): ClickUpColumnWidths {
+  const next = { ...CLICKUP_DEFAULT_COLUMN_WIDTHS }
+  for (const property of CLICKUP_DISPLAY_PROPERTIES) {
+    const width = widths[property]
+    if (width !== undefined) {
+      next[property] = Math.min(
+        CLICKUP_COLUMN_MAX_WIDTHS[property],
+        Math.max(CLICKUP_COLUMN_MIN_WIDTHS[property], width)
+      )
+    }
+  }
+  return next
+}
+
+const CLICKUP_TASK_TYPE_COLORS = [
+  'var(--color-sky-400)',
+  'var(--color-violet-400)',
+  'var(--color-emerald-400)',
+  'var(--color-amber-400)',
+  'var(--color-rose-400)',
+  'var(--color-cyan-400)',
+  'var(--color-fuchsia-400)',
+  'var(--color-lime-400)'
+] as const
+
+const CLICKUP_STATUS_FALLBACK_COLORS = [
+  'var(--color-zinc-400)',
+  'var(--color-blue-400)',
+  'var(--color-amber-400)',
+  'var(--color-emerald-400)',
+  'var(--color-rose-400)',
+  'var(--color-purple-400)'
+] as const
+
+const CLICKUP_PRIORITY_OPTIONS: ClickUpPriorityOption[] = [
+  { value: 1, key: 'urgent', color: 'var(--color-red-400)' },
+  { value: 2, key: 'high', color: 'var(--color-yellow-400)' },
+  { value: 3, key: 'normal', color: 'var(--color-blue-500)' },
+  { value: 4, key: 'low', color: 'var(--color-zinc-500)' }
+]
 
 function getGitHubWorkItemWorkspaceSeed(item: GitHubWorkItem): string {
   return getLinkedWorkItemWorkspaceName(item)?.seedName ?? getLinkedWorkItemSuggestedName(item)
@@ -420,6 +589,753 @@ function getJiraIssueWorkspaceSeed(issue: JiraIssue): string {
       jiraIdentifier: issue.key
     })?.seedName ?? getLinkedWorkItemSuggestedName(issue)
   )
+}
+
+function getClickUpTaskIdentifier(task: ClickUpTask): string {
+  return task.customId || `CU-${task.id}`
+}
+
+function getClickUpTaskDisplayId(task: ClickUpTask): string {
+  return task.customId || task.id
+}
+
+function getClickUpTaskWorkspaceSeed(task: ClickUpTask): string {
+  const identifier = getClickUpTaskIdentifier(task)
+  return getClickUpTaskWorkspaceName({ identifier, title: task.title })
+}
+
+function getClickUpTaskTypeLabel(task: ClickUpTask): string {
+  if (task.customItemName) {
+    return task.customItemName
+  }
+  if (task.customItemId === 1) {
+    return translate('auto.components.TaskPage.clickupTaskTypeMilestone', 'Milestone')
+  }
+  if (task.customItemId === null || task.customItemId === 0) {
+    return translate('auto.components.TaskPage.clickupTaskTypeTask', 'Task')
+  }
+  if (task.customItemId === undefined) {
+    return translate('auto.components.TaskPage.clickupTaskTypeUnknown', 'Unknown type')
+  }
+  return translate('auto.components.TaskPage.clickupTaskTypeCustom', 'Custom type {{value0}}', {
+    value0: task.customItemId
+  })
+}
+
+function getClickUpTaskTypeColor(task: ClickUpTask): string {
+  const label = getClickUpTaskTypeLabel(task)
+  const key = `${task.customItemId ?? 'unknown'}:${label}`
+  return getClickUpPaletteColor(key, CLICKUP_TASK_TYPE_COLORS)
+}
+
+function getClickUpTaskTypeOptionColor(taskType: ClickUpTaskTypeOption): string {
+  return getClickUpPaletteColor(`${taskType.id}:${taskType.name}`, CLICKUP_TASK_TYPE_COLORS)
+}
+
+function getClickUpPaletteColor(key: string, palette: readonly string[]): string {
+  let hash = 0
+  for (let index = 0; index < key.length; index += 1) {
+    hash = (hash * 31 + key.charCodeAt(index)) >>> 0
+  }
+  return palette[hash % palette.length]
+}
+
+function isClickUpHexColor(value: string | undefined): value is string {
+  return /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(value ?? '')
+}
+
+function getClickUpChipStyle(color: string): React.CSSProperties {
+  return {
+    '--clickup-chip-color': color,
+    backgroundColor: 'color-mix(in srgb, var(--clickup-chip-color) 14%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--clickup-chip-color) 34%, transparent)',
+    color: 'color-mix(in srgb, var(--clickup-chip-color) 82%, var(--foreground))'
+  } as React.CSSProperties
+}
+
+function getClickUpStatusColor(status: ClickUpListStatus): string {
+  return isClickUpHexColor(status.color)
+    ? status.color
+    : getClickUpPaletteColor(status.status, CLICKUP_STATUS_FALLBACK_COLORS)
+}
+
+function ClickUpTaskTypeChip({
+  task,
+  taskTypes,
+  onTypeChange,
+  fillTrigger = false,
+  truncateLabel = true,
+  updating = false
+}: {
+  task: ClickUpTask
+  taskTypes?: ClickUpTaskTypeOption[]
+  onTypeChange?: (task: ClickUpTask, taskType: ClickUpTaskTypeOption) => void
+  fillTrigger?: boolean
+  truncateLabel?: boolean
+  updating?: boolean
+}): React.JSX.Element {
+  const label = getClickUpTaskTypeLabel(task)
+  const color = getClickUpTaskTypeColor(task)
+  const chip = (
+    <span
+      className={cn(
+        'inline-flex min-w-0 max-w-full items-center rounded border border-border/50 bg-muted/40 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground',
+        !truncateLabel && 'shrink-0'
+      )}
+      title={label}
+      aria-label={label}
+      style={getClickUpChipStyle(color)}
+    >
+      <span className={cn(truncateLabel ? 'truncate' : 'whitespace-nowrap')}>{label}</span>
+    </span>
+  )
+  if (!taskTypes?.length || !onTypeChange) {
+    return chip
+  }
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={updating}
+          className={cn(
+            'min-w-0 items-center rounded border border-transparent p-0.5 transition hover:border-border/70 data-[state=open]:border-ring data-[state=open]:bg-muted/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+            fillTrigger ? 'flex min-h-7 w-full justify-start' : 'inline-flex max-w-full',
+            updating && 'opacity-70'
+          )}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {chip}
+          {updating ? (
+            <LoaderCircle className="ml-1 size-3 animate-spin text-muted-foreground" />
+          ) : null}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" onClick={(event) => event.stopPropagation()}>
+        {taskTypes.map((taskType) => {
+          const selected = (task.customItemId ?? 0) === taskType.id
+          return (
+            <DropdownMenuItem
+              key={taskType.id}
+              className="gap-2"
+              disabled={updating}
+              onSelect={() => onTypeChange(task, taskType)}
+            >
+              <span
+                className="inline-flex items-center whitespace-nowrap rounded border border-border/50 bg-muted/40 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
+                style={getClickUpChipStyle(getClickUpTaskTypeOptionColor(taskType))}
+              >
+                {taskType.name}
+              </span>
+              {selected ? <Check className="ml-auto size-3 text-muted-foreground" /> : null}
+            </DropdownMenuItem>
+          )
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function ClickUpStatusChip({
+  task,
+  statuses,
+  onStatusChange,
+  fillTrigger = false,
+  truncateLabel = true,
+  updating = false
+}: {
+  task: ClickUpTask
+  statuses?: ClickUpListStatus[]
+  onStatusChange?: (task: ClickUpTask, status: ClickUpListStatus) => void
+  fillTrigger?: boolean
+  truncateLabel?: boolean
+  updating?: boolean
+}): React.JSX.Element {
+  const currentStatus: ClickUpListStatus = task.status ?? { status: 'Open' }
+  const label = currentStatus.status
+  const chip = (
+    <span
+      className={cn(
+        'inline-flex min-w-0 max-w-full items-center rounded border border-border/50 bg-muted/40 px-1.5 py-0.5 text-[11px] font-medium uppercase text-muted-foreground',
+        !truncateLabel && 'shrink-0'
+      )}
+      title={label}
+      aria-label={label}
+      style={getClickUpChipStyle(getClickUpStatusColor(currentStatus))}
+    >
+      <span className={cn(truncateLabel ? 'truncate' : 'whitespace-nowrap')}>{label}</span>
+    </span>
+  )
+  if (!statuses?.length || !onStatusChange) {
+    return chip
+  }
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={updating}
+          className={cn(
+            'min-w-0 items-center rounded border border-transparent p-0.5 transition hover:border-border/70 data-[state=open]:border-ring data-[state=open]:bg-muted/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+            fillTrigger ? 'flex min-h-7 w-full justify-start' : 'inline-flex max-w-full',
+            updating && 'opacity-70'
+          )}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {chip}
+          {updating ? (
+            <LoaderCircle className="ml-1 size-3 animate-spin text-muted-foreground" />
+          ) : null}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" onClick={(event) => event.stopPropagation()}>
+        {statuses.map((status) => {
+          const selected = status.status === task.status?.status
+          return (
+            <DropdownMenuItem
+              key={status.status}
+              className="gap-2"
+              disabled={updating}
+              onSelect={() => onStatusChange(task, status)}
+            >
+              <span
+                className="inline-flex items-center whitespace-nowrap rounded border border-border/50 bg-muted/40 px-1.5 py-0.5 text-[11px] font-medium uppercase text-muted-foreground"
+                style={getClickUpChipStyle(getClickUpStatusColor(status))}
+              >
+                {status.status}
+              </span>
+              {selected ? <Check className="ml-auto size-3 text-muted-foreground" /> : null}
+            </DropdownMenuItem>
+          )
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function getClickUpPriorityColor(priority: string): string | null {
+  return (
+    CLICKUP_PRIORITY_OPTIONS.find((option) => option.key === priority.trim().toLowerCase())
+      ?.color ?? null
+  )
+}
+
+function getClickUpPriorityLabel(option: ClickUpPriorityOption): string {
+  switch (option.key) {
+    case 'urgent':
+      return translate('auto.components.TaskPage.clickupPriorityUrgent', 'Urgent')
+    case 'high':
+      return translate('auto.components.TaskPage.clickupPriorityHigh', 'High')
+    case 'normal':
+      return translate('auto.components.TaskPage.clickupPriorityNormal', 'Normal')
+    case 'low':
+      return translate('auto.components.TaskPage.clickupPriorityLow', 'Low')
+  }
+}
+
+function ClickUpPriorityChip({
+  task,
+  onPriorityChange,
+  fillTrigger = false,
+  updating = false
+}: {
+  task: ClickUpTask
+  onPriorityChange?: (task: ClickUpTask, priority: ClickUpPriorityOption | null) => void
+  fillTrigger?: boolean
+  updating?: boolean
+}): React.JSX.Element {
+  const label = task.priority?.priority?.trim()
+  const color = label ? getClickUpPriorityColor(label) : null
+  const chip = (
+    <span
+      className="flex min-w-0 max-w-full items-center gap-1.5 text-xs font-medium text-muted-foreground"
+      title={label || translate('auto.components.TaskPage.clickupNoPriority', 'No priority')}
+      aria-label={label || translate('auto.components.TaskPage.clickupNoPriority', 'No priority')}
+    >
+      <Flag
+        className={cn('size-3.5 shrink-0', color && 'fill-current')}
+        style={{ color: color ?? 'var(--muted-foreground)' }}
+      />
+      {label ? <span className="min-w-0 truncate">{label}</span> : null}
+    </span>
+  )
+  if (!onPriorityChange) {
+    return chip
+  }
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={updating}
+          className={cn(
+            'items-center rounded border border-transparent p-0.5 transition hover:border-border/70 data-[state=open]:border-ring data-[state=open]:bg-muted/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+            fillTrigger ? 'flex min-h-7 w-full justify-start' : 'inline-flex max-w-full',
+            updating && 'opacity-70'
+          )}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {chip}
+          {updating ? (
+            <LoaderCircle className="ml-1 size-3 animate-spin text-muted-foreground" />
+          ) : null}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" onClick={(event) => event.stopPropagation()}>
+        <DropdownMenuLabel>
+          {translate('auto.components.TaskPage.1549b36997', 'Priority')}
+        </DropdownMenuLabel>
+        {CLICKUP_PRIORITY_OPTIONS.map((option) => {
+          const optionLabel = getClickUpPriorityLabel(option)
+          const selected = label?.toLowerCase() === option.key
+          return (
+            <DropdownMenuItem
+              key={option.value}
+              className="gap-3"
+              disabled={updating}
+              onSelect={() => onPriorityChange(task, option)}
+            >
+              <Flag className="size-4 shrink-0 fill-current" style={{ color: option.color }} />
+              <span>{optionLabel}</span>
+              {selected ? <Check className="ml-auto size-3 text-muted-foreground" /> : null}
+            </DropdownMenuItem>
+          )
+        })}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="gap-3"
+          disabled={updating}
+          onSelect={() => onPriorityChange(task, null)}
+        >
+          <Ban className="size-4 shrink-0 text-muted-foreground" />
+          <span>{translate('auto.components.TaskPage.eae3b5d91a', 'Clear')}</span>
+          {!label ? <Check className="ml-auto size-3 text-muted-foreground" /> : null}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function getClickUpTagName(tag: ClickUpTask['tags'][number] | string): string {
+  return typeof tag === 'string' ? tag : tag.name
+}
+
+function getClickUpTagColor(tag: ClickUpTask['tags'][number] | string): string | undefined {
+  return typeof tag === 'string' ? undefined : tag.color
+}
+
+function ClickUpTagChip({
+  tag,
+  truncateLabel = true
+}: {
+  tag: ClickUpTask['tags'][number] | string
+  truncateLabel?: boolean
+}): React.JSX.Element | null {
+  const name = getClickUpTagName(tag)
+  if (!name) {
+    return null
+  }
+  const tagColor = getClickUpTagColor(tag)
+  const color = isClickUpHexColor(tagColor)
+    ? tagColor
+    : getClickUpPaletteColor(name, CLICKUP_TASK_TYPE_COLORS)
+  return (
+    <span
+      className={cn(
+        'inline-flex min-w-0 items-center rounded border border-border/40 bg-muted/45 px-1.5 py-0.5 text-[11px] text-muted-foreground',
+        truncateLabel ? 'shrink' : 'shrink-0 whitespace-nowrap'
+      )}
+      title={name}
+      aria-label={name}
+      style={getClickUpChipStyle(color)}
+    >
+      <span className={cn(truncateLabel && 'truncate')}>{name}</span>
+    </span>
+  )
+}
+
+function ClickUpTagsEditor({
+  task,
+  availableTags,
+  fillTrigger = false,
+  truncateLabels = true,
+  updating = false,
+  onAddTag,
+  onRemoveTag
+}: {
+  task: ClickUpTask
+  availableTags?: ClickUpTask['tags']
+  fillTrigger?: boolean
+  truncateLabels?: boolean
+  updating?: boolean
+  onAddTag?: (task: ClickUpTask, tagName: string) => Promise<void>
+  onRemoveTag?: (task: ClickUpTask, tagName: string) => Promise<void>
+}): React.JSX.Element {
+  const [tagInput, setTagInput] = useState('')
+  const tags = task.tags
+  const appliedTagNames = useMemo(
+    () => new Set(tags.map((tag) => getClickUpTagName(tag).toLowerCase())),
+    [tags]
+  )
+  const availableTagOptions = useMemo(
+    () =>
+      (availableTags ?? []).filter(
+        (tag) => !appliedTagNames.has(getClickUpTagName(tag).toLowerCase())
+      ),
+    [appliedTagNames, availableTags]
+  )
+  const trigger = (
+    <button
+      type="button"
+      disabled={updating}
+      className={cn(
+        'items-center rounded border border-transparent p-0.5 transition hover:border-border/70 data-[state=open]:border-ring data-[state=open]:bg-muted/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        fillTrigger ? 'flex min-h-7 w-full justify-start' : 'inline-flex max-w-full',
+        updating && 'opacity-70'
+      )}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <span
+        className={cn(
+          'flex min-w-0 items-center gap-1',
+          truncateLabels ? 'overflow-hidden' : 'flex-wrap'
+        )}
+      >
+        {tags.length > 0 ? (
+          <>
+            {tags.slice(0, 2).map((tag) => (
+              <ClickUpTagChip
+                key={getClickUpTagName(tag)}
+                tag={tag}
+                truncateLabel={truncateLabels}
+              />
+            ))}
+            {tags.length > 2 ? (
+              <span className="shrink-0 text-[11px] text-muted-foreground">+{tags.length - 2}</span>
+            ) : null}
+          </>
+        ) : (
+          <Tag className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+      </span>
+      {updating ? (
+        <LoaderCircle className="ml-1 size-3 animate-spin text-muted-foreground" />
+      ) : null}
+    </button>
+  )
+
+  if (!onAddTag || !onRemoveTag) {
+    return trigger
+  }
+
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        className="w-72"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <DropdownMenuLabel>
+          {translate('auto.components.TaskPage.clickupTags', 'Tags')}
+        </DropdownMenuLabel>
+        <div className="px-2 pb-2">
+          <div className="flex min-h-8 flex-wrap gap-1 rounded border border-border/50 bg-muted/20 p-2">
+            {tags.length > 0 ? (
+              tags.map((tag) => {
+                const name = getClickUpTagName(tag)
+                return (
+                  <span key={name} className="inline-flex min-w-0 items-center gap-1">
+                    <ClickUpTagChip tag={tag} />
+                    <button
+                      type="button"
+                      disabled={updating}
+                      className="inline-flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                      onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        void onRemoveTag(task, name)
+                      }}
+                      aria-label={translate(
+                        'auto.components.TaskPage.clickupRemoveTag',
+                        'Remove {{value0}}',
+                        { value0: name }
+                      )}
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </span>
+                )
+              })
+            ) : (
+              <span className="text-xs text-muted-foreground">
+                {translate('auto.components.TaskPage.clickupNoTags', 'No tags')}
+              </span>
+            )}
+          </div>
+          {availableTagOptions.length > 0 ? (
+            <>
+              <div className="mt-3 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                {translate('auto.components.TaskPage.clickupAvailableTags', 'Available tags')}
+              </div>
+              <div className="mt-1 flex max-h-36 flex-wrap gap-1 overflow-y-auto pr-1 scrollbar-sleek">
+                {availableTagOptions.map((tag) => {
+                  const name = getClickUpTagName(tag)
+                  return (
+                    <div
+                      key={name}
+                      role="button"
+                      tabIndex={updating ? -1 : 0}
+                      aria-disabled={updating}
+                      className={cn(
+                        'inline-flex min-w-0 cursor-pointer rounded p-0.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                        updating && 'pointer-events-none opacity-50'
+                      )}
+                      onPointerDown={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        if (updating) {
+                          return
+                        }
+                        void onAddTag(task, name)
+                      }}
+                      onKeyDown={(event) => {
+                        event.stopPropagation()
+                        if (updating || (event.key !== 'Enter' && event.key !== ' ')) {
+                          return
+                        }
+                        event.preventDefault()
+                        void onAddTag(task, name)
+                      }}
+                    >
+                      <ClickUpTagChip tag={tag} />
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          ) : null}
+          <form
+            className="mt-2 flex gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const nextTag = tagInput.trim()
+              if (!nextTag) {
+                return
+              }
+              setTagInput('')
+              void onAddTag(task, nextTag)
+            }}
+          >
+            <Input
+              value={tagInput}
+              disabled={updating}
+              placeholder={translate('auto.components.TaskPage.clickupAddTag', 'Add tag')}
+              onChange={(event) => setTagInput(event.target.value)}
+              onKeyDown={(event) => event.stopPropagation()}
+            />
+            <Button type="submit" size="sm" disabled={updating || !tagInput.trim()}>
+              {translate('auto.components.TaskPage.c77dfbb951', 'Add')}
+            </Button>
+          </form>
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function clickUpTaskMatchesQuery(task: ClickUpTask, query: string): boolean {
+  const needle = query.trim().toLowerCase()
+  if (!needle) {
+    return true
+  }
+  const haystack = [
+    task.id,
+    task.customId ?? '',
+    task.title,
+    task.description ?? '',
+    task.markdownDescription ?? '',
+    task.customItemName ?? '',
+    task.status?.status ?? '',
+    task.priority?.priority ?? '',
+    ...task.tags.map((tag) => getClickUpTagName(tag))
+  ]
+    .join('\n')
+    .toLowerCase()
+  return haystack.includes(needle)
+}
+
+function getClickUpPriorityRank(task: ClickUpTask): number {
+  const priorityId = Number(task.priority?.id)
+  if (Number.isFinite(priorityId) && priorityId > 0) {
+    return priorityId
+  }
+  const label = task.priority?.priority.toLowerCase()
+  if (label === 'urgent') {
+    return 1
+  }
+  if (label === 'high') {
+    return 2
+  }
+  if (label === 'normal' || label === 'medium') {
+    return 3
+  }
+  if (label === 'low') {
+    return 4
+  }
+  return 99
+}
+
+function compareClickUpTaskGroups(
+  left: ClickUpTask,
+  right: ClickUpTask,
+  grouping: ClickUpGrouping
+): number {
+  switch (grouping) {
+    case 'status': {
+      const leftIndex = left.status?.orderindex
+      const rightIndex = right.status?.orderindex
+      if (leftIndex !== undefined && rightIndex !== undefined && leftIndex !== rightIndex) {
+        return leftIndex - rightIndex
+      }
+      return (left.status?.status ?? '').localeCompare(right.status?.status ?? '')
+    }
+    case 'priority':
+      return getClickUpPriorityRank(left) - getClickUpPriorityRank(right)
+    case 'type': {
+      const leftTypeId = left.customItemId ?? 0
+      const rightTypeId = right.customItemId ?? 0
+      if (leftTypeId !== rightTypeId) {
+        return leftTypeId - rightTypeId
+      }
+      return getClickUpTaskTypeLabel(left).localeCompare(getClickUpTaskTypeLabel(right))
+    }
+    case 'tag':
+      return (left.tags[0] ? getClickUpTagName(left.tags[0]) : '').localeCompare(
+        right.tags[0] ? getClickUpTagName(right.tags[0]) : ''
+      )
+    case 'none':
+      return 0
+  }
+}
+
+function getClickUpTaskGroup(
+  task: ClickUpTask,
+  grouping: ClickUpGrouping
+): Omit<ClickUpTaskGroup, 'count'> {
+  let label: string
+  let color: string | undefined
+  switch (grouping) {
+    case 'status':
+      label =
+        task.status?.status ??
+        translate('auto.components.TaskPage.clickupGroupNoStatus', 'No status')
+      color = task.status ? getClickUpStatusColor(task.status) : undefined
+      break
+    case 'priority': {
+      label =
+        task.priority?.priority ??
+        translate('auto.components.TaskPage.clickupGroupNoPriority', 'No priority')
+      const priorityFallback = CLICKUP_PRIORITY_OPTIONS.find(
+        (option) => option.value === Number(task.priority?.id)
+      )
+      color = isClickUpHexColor(task.priority?.color)
+        ? task.priority.color
+        : priorityFallback?.color
+      break
+    }
+    case 'type':
+      label = getClickUpTaskTypeLabel(task)
+      color = getClickUpTaskTypeColor(task)
+      break
+    case 'tag': {
+      const tag = task.tags[0]
+      label = tag
+        ? getClickUpTagName(tag)
+        : translate('auto.components.TaskPage.clickupGroupNoTags', 'No tags')
+      const tagColor = tag ? getClickUpTagColor(tag) : undefined
+      color = tag
+        ? isClickUpHexColor(tagColor)
+          ? tagColor
+          : getClickUpPaletteColor(label, CLICKUP_TASK_TYPE_COLORS)
+        : undefined
+      break
+    }
+    case 'none':
+      label = translate('auto.components.TaskPage.clickupGroupNone', 'None')
+      break
+  }
+  return { id: `${grouping}:${label.toLocaleLowerCase()}`, label, color }
+}
+
+function compareClickUpTasksByOrdering(
+  left: ClickUpTask,
+  right: ClickUpTask,
+  ordering: ClickUpOrdering
+): number {
+  if (ordering === 'priority') {
+    return getClickUpPriorityRank(left) - getClickUpPriorityRank(right)
+  }
+  if (ordering === 'identity') {
+    const leftId = getClickUpTaskDisplayId(left)
+    const rightId = getClickUpTaskDisplayId(right)
+    return leftId.localeCompare(rightId) || left.title.localeCompare(right.title)
+  }
+  return new Date(left.updatedAt).getTime() - new Date(right.updatedAt).getTime()
+}
+
+function orderClickUpTasks(
+  tasks: readonly ClickUpTask[],
+  grouping: ClickUpGrouping,
+  groupDirection: ClickUpGroupDirection,
+  ordering: ClickUpOrdering,
+  orderingDirection: ClickUpGroupDirection
+): ClickUpTask[] {
+  return [...tasks].sort((left, right) => {
+    const ascendingGroupCompare = compareClickUpTaskGroups(left, right, grouping)
+    const groupCompare =
+      groupDirection === 'descending' ? -ascendingGroupCompare : ascendingGroupCompare
+    const ascendingOrderingCompare = compareClickUpTasksByOrdering(left, right, ordering)
+    const orderingCompare =
+      orderingDirection === 'descending' ? -ascendingOrderingCompare : ascendingOrderingCompare
+    return groupCompare || orderingCompare
+  })
+}
+
+function filterClickUpTasksForTreeSearch(
+  tasks: readonly ClickUpTask[],
+  query: string
+): ClickUpTask[] {
+  const directMatches = new Set(
+    tasks.filter((task) => clickUpTaskMatchesQuery(task, query)).map((task) => task.id)
+  )
+  if (directMatches.size === 0) {
+    return []
+  }
+  const tasksById = new Map(tasks.map((task) => [task.id, task]))
+  const childrenByParent = new Map<string, ClickUpTask[]>()
+  for (const task of tasks) {
+    if (!task.parentId) {
+      continue
+    }
+    childrenByParent.set(task.parentId, [...(childrenByParent.get(task.parentId) ?? []), task])
+  }
+  const included = new Set<string>()
+  const includeDescendants = (taskId: string): void => {
+    included.add(taskId)
+    for (const child of childrenByParent.get(taskId) ?? []) {
+      includeDescendants(child.id)
+    }
+  }
+  for (const taskId of directMatches) {
+    includeDescendants(taskId)
+    let current = tasksById.get(taskId)
+    while (current?.parentId && tasksById.has(current.parentId)) {
+      included.add(current.parentId)
+      current = tasksById.get(current.parentId)
+    }
+  }
+  return tasks.filter((task) => included.has(task.id))
 }
 
 function getTaskPageRepoSourceContext(
@@ -1289,7 +2205,10 @@ function GHStatusCell({
         return
       }
       setDuplicateError(null)
-      handleStateChange('closed', { stateReason: 'duplicate', duplicateOf: validation.duplicateOf })
+      handleStateChange('closed', {
+        stateReason: 'duplicate',
+        duplicateOf: validation.duplicateOf
+      })
       setOpen(false)
       setDuplicatePickerOpen(false)
     },
@@ -3122,16 +4041,41 @@ export default function TaskPage(): React.JSX.Element {
   const searchJiraIssues = useAppStore((s) => s.searchJiraIssues)
   const listJiraIssues = useAppStore((s) => s.listJiraIssues)
   const checkJiraConnection = useAppStore((s) => s.checkJiraConnection)
+  const clickUpStatus = useAppStore((s) => s.clickUpStatus)
+  const clickUpStatusChecked = useAppStore((s) => s.clickUpStatusChecked)
+  const clickUpStatusContextKey = useAppStore((s) => s.clickUpStatusContextKey)
+  const checkClickUpConnection = useAppStore((s) => s.checkClickUpConnection)
+  const selectClickUpWorkspace = useAppStore((s) => s.selectClickUpWorkspace)
+  const fetchClickUpSpaces = useAppStore((s) => s.fetchClickUpSpaces)
+  const fetchClickUpFolders = useAppStore((s) => s.fetchClickUpFolders)
+  const fetchClickUpSpaceTags = useAppStore((s) => s.fetchClickUpSpaceTags)
+  const fetchClickUpTaskTypes = useAppStore((s) => s.fetchClickUpTaskTypes)
+  const fetchClickUpAssignableMembers = useAppStore((s) => s.fetchClickUpAssignableMembers)
+  const fetchClickUpFolderlessLists = useAppStore((s) => s.fetchClickUpFolderlessLists)
+  const fetchClickUpFolderLists = useAppStore((s) => s.fetchClickUpFolderLists)
+  const loadClickUpTaskGraph = useAppStore((s) => s.loadClickUpTaskGraph)
+  const loadClickUpTaskBranch = useAppStore((s) => s.loadClickUpTaskBranch)
+  const resetClickUpTaskGraph = useAppStore((s) => s.resetClickUpTaskGraph)
+  const seedClickUpTaskGraph = useAppStore((s) => s.seedClickUpTaskGraph)
+  const updateClickUpTaskGraphTasks = useAppStore((s) => s.updateClickUpTaskGraphTasks)
+  const fetchClickUpTask = useAppStore((s) => s.fetchClickUpTask)
+  const updateClickUpTask = useAppStore((s) => s.updateClickUpTask)
+  const addClickUpTaskTag = useAppStore((s) => s.addClickUpTaskTag)
+  const removeClickUpTaskTag = useAppStore((s) => s.removeClickUpTaskTag)
+  const patchClickUpTask = useAppStore((s) => s.patchClickUpTask)
   const providerRuntimeContextKey = getProviderRuntimeContextKey(settings)
   const providerRuntimeContextKeyRef = useRef(providerRuntimeContextKey)
   providerRuntimeContextKeyRef.current = providerRuntimeContextKey
   const linearStatusCurrent = linearStatusContextKey === providerRuntimeContextKey
   const jiraStatusCurrent = jiraStatusContextKey === providerRuntimeContextKey
+  const clickUpStatusCurrent = clickUpStatusContextKey === providerRuntimeContextKey
   const preflightStatusCurrent = preflightStatusContextKey === expectedPreflightContextKey
   const linearStatusReady = linearStatusCurrent && linearStatusChecked
   const jiraStatusReady = jiraStatusCurrent && jiraStatusChecked
+  const clickUpStatusReady = clickUpStatusCurrent && clickUpStatusChecked
   const linearConnected = linearStatusCurrent && linearStatus.connected
   const jiraConnected = jiraStatusCurrent && jiraStatus.connected
+  const clickUpConnected = clickUpStatusCurrent && clickUpStatus.connected
   const submitShortcutLabel = getScreenSubmitShortcutLabel()
   const eligibleRepos = useMemo(() => repos.filter((repo) => isGitRepoKind(repo)), [repos])
 
@@ -3226,6 +4170,49 @@ export default function TaskPage(): React.JSX.Element {
     selectedJiraSiteId && selectedJiraSiteId !== 'all'
       ? (jiraSites.find((site) => site.id === selectedJiraSiteId) ?? null)
       : null
+  const clickUpWorkspaces = clickUpStatus.workspaces ?? []
+  const resumedClickUpWorkspaceId = taskResumeState?.clickUpWorkspaceId
+  const selectedClickUpWorkspaceId =
+    clickUpStatus.selectedWorkspaceId ??
+    (resumedClickUpWorkspaceId &&
+    clickUpWorkspaces.some((workspace) => workspace.id === resumedClickUpWorkspaceId)
+      ? resumedClickUpWorkspaceId
+      : null) ??
+    clickUpStatus.activeWorkspaceId ??
+    clickUpWorkspaces[0]?.id ??
+    null
+  const selectedClickUpWorkspace =
+    selectedClickUpWorkspaceId && selectedClickUpWorkspaceId !== 'all'
+      ? (clickUpWorkspaces.find((workspace) => workspace.id === selectedClickUpWorkspaceId) ?? null)
+      : null
+  const [clickUpSpaces, setClickUpSpaces] = useState<ClickUpSpace[]>([])
+  const [selectedClickUpSpaceId, setSelectedClickUpSpaceId] = useState<string | null>(
+    () => taskResumeState?.clickUpSpaceId ?? null
+  )
+  const [clickUpListOptions, setClickUpListOptions] = useState<
+    { list: ClickUpList; label: string }[]
+  >([])
+  const [clickUpAvailableTags, setClickUpAvailableTags] = useState<ClickUpTask['tags']>([])
+  const [clickUpAvailableTaskTypes, setClickUpAvailableTaskTypes] = useState<ClickUpTaskType[]>([])
+  const [clickUpAssignableMembers, setClickUpAssignableMembers] = useState<ClickUpUser[]>([])
+  const [clickUpAssignableMembersLoading, setClickUpAssignableMembersLoading] = useState(false)
+  const [clickUpAssignableMembersError, setClickUpAssignableMembersError] = useState<string | null>(
+    null
+  )
+  const [selectedClickUpListId, setSelectedClickUpListId] = useState<string | null>(
+    () => taskResumeState?.clickUpListId ?? null
+  )
+  const [selectedClickUpViewId, setSelectedClickUpViewId] = useState<string | null>(
+    () => taskResumeState?.clickUpViewId ?? null
+  )
+  const selectedClickUpSpace =
+    selectedClickUpSpaceId !== null
+      ? (clickUpSpaces.find((space) => space.id === selectedClickUpSpaceId) ?? null)
+      : null
+  const selectedClickUpListOption =
+    selectedClickUpListId !== null
+      ? (clickUpListOptions.find((option) => option.list.id === selectedClickUpListId) ?? null)
+      : null
   const preferredVisibleTaskProviders = useMemo(
     () => normalizeVisibleTaskProviders(settings?.visibleTaskProviders),
     [settings?.visibleTaskProviders]
@@ -3237,11 +4224,13 @@ export default function TaskPage(): React.JSX.Element {
         preferredVisibleTaskProviders,
         {
           gitlabInstalled: preflightStatusCurrent && preflightStatus?.glab?.installed === true,
-          linearConnected: linearConnected === true
+          linearConnected: linearConnected === true,
+          clickupConnected: clickUpConnected === true
         },
         defaultTaskSource
       ),
     [
+      clickUpConnected,
       defaultTaskSource,
       linearConnected,
       preferredVisibleTaskProviders,
@@ -3521,11 +4510,39 @@ export default function TaskPage(): React.JSX.Element {
       selectedJiraSiteId
     ]
   )
+  const clickUpTaskSourceContext = useMemo(
+    () =>
+      normalizeTaskSourceContext({
+        provider: 'clickup',
+        projectId: fallbackTaskSourceProjectId,
+        hostId: accountBackedTaskSourceHostId,
+        providerIdentity: {
+          provider: 'clickup',
+          workspaceId:
+            selectedClickUpWorkspaceId && selectedClickUpWorkspaceId !== 'all'
+              ? selectedClickUpWorkspaceId
+              : null,
+          spaceId: selectedClickUpSpaceId,
+          folderId: selectedClickUpListOption?.list.folderId ?? null,
+          listId: selectedClickUpListId
+        },
+        accountLabel: selectedClickUpWorkspace?.name ?? null
+      }),
+    [
+      accountBackedTaskSourceHostId,
+      fallbackTaskSourceProjectId,
+      selectedClickUpListId,
+      selectedClickUpListOption?.list.folderId,
+      selectedClickUpSpaceId,
+      selectedClickUpWorkspace,
+      selectedClickUpWorkspaceId
+    ]
+  )
   const jiraTaskSourceScopeKey = jiraTaskSourceContext
     ? getTaskSourceCacheScope(jiraTaskSourceContext)
     : providerRuntimeContextKey
   const accountBackedTaskSourceHostAvailability = useMemo<TaskSourceHostAvailability[]>(() => {
-    if (taskSource !== 'linear' && taskSource !== 'jira') {
+    if (taskSource !== 'linear' && taskSource !== 'jira' && taskSource !== 'clickup') {
       return []
     }
     const host = hostRegistryById.get(accountBackedTaskSourceHostId)
@@ -3598,6 +4615,13 @@ export default function TaskPage(): React.JSX.Element {
           sourceCount: 1,
           hostLabelById,
           hostAvailability: accountAvailability
+        }) ?? undefined,
+      clickup:
+        getTaskSourceAvailabilityNotice({
+          providerLabel: labelFor('clickup'),
+          sourceCount: 1,
+          hostLabelById,
+          hostAvailability: accountAvailability
         }) ?? undefined
     }
   }, [
@@ -3619,7 +4643,7 @@ export default function TaskPage(): React.JSX.Element {
       providerLabel,
       repoContexts: taskSourceRepoContexts,
       hostAvailability:
-        taskSource === 'linear' || taskSource === 'jira'
+        taskSource === 'linear' || taskSource === 'jira' || taskSource === 'clickup'
           ? accountBackedTaskSourceHostAvailability
           : taskSourceHostAvailability,
       accountHostId: accountBackedTaskSourceHostId,
@@ -3627,9 +4651,11 @@ export default function TaskPage(): React.JSX.Element {
       selectedRepoCount: selectedRepos.length,
       linearWorkspaceName:
         selectedLinearWorkspace?.organizationName ?? selectedLinearWorkspace?.id ?? null,
-      jiraSiteName: selectedJiraSite?.displayName ?? selectedJiraSite?.siteUrl ?? null
+      jiraSiteName: selectedJiraSite?.displayName ?? selectedJiraSite?.siteUrl ?? null,
+      clickUpWorkspaceName: selectedClickUpWorkspace?.name ?? selectedClickUpWorkspace?.id ?? null
     })
   }, [
+    selectedClickUpWorkspace,
     selectedJiraSite,
     selectedLinearWorkspace,
     selectedRepos.length,
@@ -3647,11 +4673,11 @@ export default function TaskPage(): React.JSX.Element {
     return getTaskSourceAvailabilityNotice({
       providerLabel,
       sourceCount:
-        taskSource === 'linear' || taskSource === 'jira'
+        taskSource === 'linear' || taskSource === 'jira' || taskSource === 'clickup'
           ? 1
           : Math.max(1, taskSourceRepoContexts.length),
       hostAvailability:
-        taskSource === 'linear' || taskSource === 'jira'
+        taskSource === 'linear' || taskSource === 'jira' || taskSource === 'clickup'
           ? accountBackedTaskSourceHostAvailability
           : taskSourceHostAvailability,
       hostLabelById
@@ -3678,6 +4704,11 @@ export default function TaskPage(): React.JSX.Element {
   const githubSearchPersistReadyRef = useRef(false)
   const linearSearchPersistReadyRef = useRef(false)
   const jiraSearchPersistReadyRef = useRef(false)
+  const pendingClickUpScopeRef = useRef<{
+    workspaceId?: string
+    spaceId?: string
+    listId?: string
+  } | null>(null)
   const [taskResumeApplied, setTaskResumeApplied] = useState(false)
 
   // Why: pageData.taskSource changes when the user clicks a specific source
@@ -4676,6 +5707,491 @@ export default function TaskPage(): React.JSX.Element {
     [jiraOrderBy]
   )
 
+  // ClickUp tab state
+  const [clickUpHierarchyLoading, setClickUpHierarchyLoading] = useState(false)
+  const [clickUpError, setClickUpError] = useState<string | null>(null)
+  const [clickUpSearchInput, setClickUpSearchInput] = useState('')
+  const [appliedClickUpSearch, setAppliedClickUpSearch] = useState('')
+  const [clickUpRefreshNonce, setClickUpRefreshNonce] = useState(0)
+  const clickUpListViewsState = useClickUpListViews({
+    enabled: taskResumeApplied && taskSource === 'clickup' && clickUpConnected,
+    listId: selectedClickUpListId,
+    workspaceId: selectedClickUpWorkspaceId,
+    sourceContext: clickUpTaskSourceContext,
+    refreshNonce: clickUpRefreshNonce
+  })
+  const selectedClickUpSavedView = useMemo(
+    () =>
+      getSelectableClickUpSavedViews(clickUpListViewsState.data).find(
+        (view) => view.id === selectedClickUpViewId
+      ) ?? null,
+    [clickUpListViewsState.data, selectedClickUpViewId]
+  )
+  const selectedClickUpSavedViewLayout = useMemo(
+    () => (selectedClickUpSavedView ? getClickUpSavedViewLayout(selectedClickUpSavedView) : null),
+    [selectedClickUpSavedView]
+  )
+  const [newClickUpTaskOpen, setNewClickUpTaskOpen] = useState(false)
+  const [newClickUpTaskTitle, setNewClickUpTaskTitle] = useState('')
+  const [newClickUpTaskDescription, setNewClickUpTaskDescription] = useState('')
+  const [newClickUpTaskListId, setNewClickUpTaskListId] = useState<string | null>(null)
+  const [newClickUpTaskStatus, setNewClickUpTaskStatus] = useState<string>('')
+  const [newClickUpTaskPriority, setNewClickUpTaskPriority] = useState<string>('')
+  const [newClickUpTaskTypeId, setNewClickUpTaskTypeId] = useState<string>('')
+  const [newClickUpTaskTagNames, setNewClickUpTaskTagNames] = useState<string[]>([])
+  const [newClickUpTaskSubmitting, setNewClickUpTaskSubmitting] = useState(false)
+  const [clickUpInlineSubtaskDraft, setClickUpInlineSubtaskDraft] =
+    useState<ClickUpInlineSubtaskDraft | null>(null)
+  const [clickUpInlineSubtaskSubmitting, setClickUpInlineSubtaskSubmitting] = useState(false)
+  const [clickUpInlineCreatedTaskIds, setClickUpInlineCreatedTaskIds] = useState<string[]>([])
+  const [clickUpSubtaskMode, setClickUpSubtaskMode] = useState<ClickUpSubtaskMode>(
+    () =>
+      taskResumeState?.clickUpSubtaskMode ??
+      (taskResumeState?.clickUpViewMode === 'flat' ? 'separate' : 'collapsed')
+  )
+  const clickUpViewMode: ClickUpViewMode = clickUpSubtaskMode === 'separate' ? 'flat' : 'tree'
+  const [clickUpGrouping, setClickUpGrouping] = useState<ClickUpGrouping>(
+    () => taskResumeState?.clickUpGrouping ?? 'none'
+  )
+  const [clickUpGroupDirection, setClickUpGroupDirection] = useState<ClickUpGroupDirection>(
+    () => taskResumeState?.clickUpGroupDirection ?? 'ascending'
+  )
+  const [collapsedClickUpGroupIds, setCollapsedClickUpGroupIds] = useState<Set<string>>(
+    () => new Set()
+  )
+  const [clickUpOrdering, setClickUpOrdering] = useState<ClickUpOrdering>(
+    () => taskResumeState?.clickUpOrdering ?? 'updated'
+  )
+  const clickUpOrderingDirection: ClickUpGroupDirection =
+    selectedClickUpSavedViewLayout?.orderingDirection ??
+    (clickUpOrdering === 'updated' ? 'descending' : 'ascending')
+  const [clickUpShowClosedTasks, setClickUpShowClosedTasks] = useState(
+    () => taskResumeState?.clickUpShowClosedTasks ?? false
+  )
+  const [clickUpDisplayProperties, setClickUpDisplayProperties] = useState<
+    Set<ClickUpDisplayProperty>
+  >(() => new Set(taskResumeState?.clickUpDisplayProperties ?? CLICKUP_DISPLAY_PROPERTIES))
+  const clickUpChildDiscoveryScope = clickUpTaskSourceContext
+    ? getTaskSourceCacheScope(clickUpTaskSourceContext)
+    : `clickup:${providerRuntimeContextKey}`
+  const clickUpTaskFilter = clickUpShowClosedTasks ? 'all' : 'open'
+  const clickUpTaskProjection = selectedClickUpViewId
+    ? `view:${selectedClickUpViewId}`
+    : clickUpTaskFilter
+  const clickUpTaskGraphKey = `${clickUpChildDiscoveryScope}::task-graph:${selectedClickUpWorkspaceId ?? ''}:${selectedClickUpListId ?? ''}:${clickUpTaskProjection}`
+  const clickUpOpenTaskGraphKey = `${clickUpChildDiscoveryScope}::task-graph:${selectedClickUpWorkspaceId ?? ''}:${selectedClickUpListId ?? ''}:open`
+  const clickUpTaskGraph = useAppStore((state) => state.clickUpTaskGraphs[clickUpTaskGraphKey])
+  const clickUpTasks = useMemo(
+    () => clickUpTaskGraph?.taskOrder.flatMap((id) => clickUpTaskGraph.tasksById[id] ?? []) ?? [],
+    [clickUpTaskGraph]
+  )
+  const clickUpLoading = clickUpTaskGraph?.rootStatus === 'loading'
+  const setClickUpTasks = useCallback(
+    (update: ClickUpTask[] | ((current: ClickUpTask[]) => ClickUpTask[])): void => {
+      updateClickUpTaskGraphTasks(clickUpTaskGraphKey, (current) =>
+        typeof update === 'function' ? update(current) : update
+      )
+    },
+    [clickUpTaskGraphKey, updateClickUpTaskGraphTasks]
+  )
+  const [clickUpTreeExpansion, setClickUpTreeExpansion] = useState(createClickUpTreeExpansionState)
+  const loadingClickUpSubtaskParentIds = useMemo(
+    () =>
+      new Set(
+        Object.entries(clickUpTaskGraph?.childrenStateByParent ?? {}).flatMap(([id, state]) =>
+          state.status === 'loading' ? [id] : []
+        )
+      ),
+    [clickUpTaskGraph?.childrenStateByParent]
+  )
+  const failedClickUpSubtaskParentIds = useMemo(
+    () =>
+      new Set(
+        Object.entries(clickUpTaskGraph?.childrenStateByParent ?? {}).flatMap(([id, state]) =>
+          state.status === 'error' ? [id] : []
+        )
+      ),
+    [clickUpTaskGraph?.childrenStateByParent]
+  )
+  const hydratedClickUpSubtaskParentIds = useMemo(
+    () =>
+      new Set(
+        Object.entries(clickUpTaskGraph?.childrenStateByParent ?? {}).flatMap(([id, state]) =>
+          state.status === 'complete' ? [id] : []
+        )
+      ),
+    [clickUpTaskGraph?.childrenStateByParent]
+  )
+  const clickUpTreeExpansionContext = getClickUpTreeExpansionContextKey({
+    sourceContext: clickUpTaskSourceContext,
+    providerRuntimeContextKey,
+    workspaceId: selectedClickUpWorkspaceId,
+    listId: selectedClickUpListId,
+    viewId: selectedClickUpViewId,
+    filter: clickUpTaskFilter
+  })
+  const expandedClickUpTaskIds = getClickUpTreeExpandedIds(
+    clickUpTreeExpansion,
+    clickUpTreeExpansionContext
+  )
+  const setExpandedClickUpTaskIds = useCallback(
+    (update: ClickUpTreeExpansionUpdate): void => {
+      setClickUpTreeExpansion((current) =>
+        updateClickUpTreeExpansion(current, clickUpTreeExpansionContext, update)
+      )
+    },
+    [clickUpTreeExpansionContext]
+  )
+  const [clickUpColumnWidths, setClickUpColumnWidths] = useState<ClickUpColumnWidths>(
+    CLICKUP_DEFAULT_COLUMN_WIDTHS
+  )
+  const clickUpAllTasksColumnWidthsRef = useRef<ClickUpColumnWidths>(CLICKUP_DEFAULT_COLUMN_WIDTHS)
+  const [activeClickUpResizeColumn, setActiveClickUpResizeColumn] =
+    useState<ClickUpResizableColumn | null>(null)
+  const clickUpTaskScrollRef = useRef<HTMLDivElement>(null)
+  const clickUpRefreshHandledRef = useRef<Map<string, number>>(new Map())
+  const clickUpIdCopyResetTimerRef = useRef<number | null>(null)
+  const [copiedClickUpTaskId, setCopiedClickUpTaskId] = useState<string | null>(null)
+  const [updatingClickUpFields, setUpdatingClickUpFields] = useState<Set<string>>(() => new Set())
+  const [selectedClickUpTaskId, setSelectedClickUpTaskId] = useState<string | null>(null)
+  const [selectedClickUpTaskDetail, setSelectedClickUpTaskDetail] = useState<ClickUpTask | null>(
+    null
+  )
+  const [clickUpTaskDetailLoading, setClickUpTaskDetailLoading] = useState(false)
+  const [clickUpTaskDetailError, setClickUpTaskDetailError] = useState<string | null>(null)
+  const selectedClickUpTask =
+    selectedClickUpTaskId !== null
+      ? (clickUpTasks.find((task) => task.id === selectedClickUpTaskId) ?? null)
+      : null
+  const activeClickUpTask = selectedClickUpTaskDetail ?? selectedClickUpTask
+  const closeClickUpDetailPage = useCallback(() => {
+    setSelectedClickUpTaskId(null)
+    setSelectedClickUpTaskDetail(null)
+    setClickUpTaskDetailError(null)
+  }, [])
+  const clickUpSearchActive = appliedClickUpSearch.trim().length > 0
+  const visibleClickUpTasks = useMemo(
+    () =>
+      filterClickUpTasksByClosedVisibility(
+        clickUpTasks,
+        selectedClickUpViewId ? true : clickUpShowClosedTasks,
+        clickUpViewMode,
+        Boolean(selectedClickUpViewId)
+      ),
+    [clickUpShowClosedTasks, clickUpTasks, clickUpViewMode, selectedClickUpViewId]
+  )
+  const displayedClickUpTasks = useMemo(() => {
+    if (!clickUpSearchActive) {
+      return visibleClickUpTasks
+    }
+    return clickUpViewMode === 'tree'
+      ? filterClickUpTasksForTreeSearch(visibleClickUpTasks, appliedClickUpSearch)
+      : visibleClickUpTasks.filter((task) => clickUpTaskMatchesQuery(task, appliedClickUpSearch))
+  }, [appliedClickUpSearch, clickUpSearchActive, clickUpViewMode, visibleClickUpTasks])
+  const orderedClickUpTasks = useMemo(
+    () =>
+      preserveClickUpCreatedSubtaskPlacement(
+        selectedClickUpViewId && clickUpGrouping === 'none'
+          ? displayedClickUpTasks
+          : orderClickUpTasks(
+              displayedClickUpTasks,
+              clickUpGrouping,
+              clickUpGroupDirection,
+              clickUpOrdering,
+              clickUpOrderingDirection
+            ),
+        clickUpInlineCreatedTaskIds
+      ),
+    [
+      clickUpGroupDirection,
+      clickUpGrouping,
+      clickUpInlineCreatedTaskIds,
+      clickUpOrdering,
+      clickUpOrderingDirection,
+      displayedClickUpTasks,
+      selectedClickUpViewId
+    ]
+  )
+  const pendingClickUpChildRowIds = useMemo(() => {
+    if (selectedClickUpViewId) {
+      return new Set<string>()
+    }
+    const tasksById = new Map(visibleClickUpTasks.map((task) => [task.id, task]))
+    return new Set(
+      [...expandedClickUpTaskIds].filter((taskId) => {
+        const task = tasksById.get(taskId)
+        return (
+          task !== undefined &&
+          !failedClickUpSubtaskParentIds.has(taskId) &&
+          shouldLoadClickUpTaskChildren(task, hydratedClickUpSubtaskParentIds)
+        )
+      })
+    )
+  }, [
+    expandedClickUpTaskIds,
+    failedClickUpSubtaskParentIds,
+    hydratedClickUpSubtaskParentIds,
+    selectedClickUpViewId,
+    visibleClickUpTasks
+  ])
+  const ungroupedClickUpTaskRows = useMemo(
+    () =>
+      getClickUpTaskRows(
+        orderedClickUpTasks,
+        expandedClickUpTaskIds,
+        clickUpViewMode,
+        pendingClickUpChildRowIds,
+        clickUpInlineSubtaskDraft?.parentTaskId,
+        !selectedClickUpViewId
+      ),
+    [
+      clickUpInlineSubtaskDraft?.parentTaskId,
+      clickUpViewMode,
+      expandedClickUpTaskIds,
+      orderedClickUpTasks,
+      pendingClickUpChildRowIds,
+      selectedClickUpViewId
+    ]
+  )
+  const clickUpTaskRows = useMemo(
+    () =>
+      clickUpGrouping === 'none'
+        ? ungroupedClickUpTaskRows
+        : getClickUpGroupedTaskRows(
+            ungroupedClickUpTaskRows,
+            (task) => getClickUpTaskGroup(task, clickUpGrouping),
+            collapsedClickUpGroupIds
+          ),
+    [clickUpGrouping, collapsedClickUpGroupIds, ungroupedClickUpTaskRows]
+  )
+  const clickUpDisplayPropertyOptions = useMemo(
+    () => [
+      {
+        id: 'type' as const,
+        label: translate('auto.components.TaskPage.clickupTaskType', 'Type')
+      },
+      {
+        id: 'status' as const,
+        label: translate('auto.components.TaskPage.clickupStatus', 'Status')
+      },
+      {
+        id: 'priority' as const,
+        label: translate('auto.components.TaskPage.clickupPriority', 'Priority')
+      },
+      {
+        id: 'tags' as const,
+        label: translate('auto.components.TaskPage.clickupTags', 'Tags')
+      },
+      {
+        id: 'assignees' as const,
+        label: translate('auto.components.TaskPage.clickupAssignees', 'Assignees')
+      },
+      {
+        id: 'updated' as const,
+        label: translate('auto.components.TaskPage.clickupUpdated', 'Updated')
+      }
+    ],
+    []
+  )
+  const clickUpDisplayPropertiesAreDefault =
+    clickUpDisplayProperties.size === CLICKUP_DISPLAY_PROPERTIES.length &&
+    CLICKUP_DISPLAY_PROPERTIES.every((property) => clickUpDisplayProperties.has(property))
+  const clickUpViewSettingsModified =
+    !clickUpDisplayPropertiesAreDefault ||
+    (!selectedClickUpViewId && (clickUpShowClosedTasks || clickUpOrdering !== 'updated'))
+  const clickUpStatusOptions = useMemo(() => {
+    const listStatuses = selectedClickUpListOption?.list.statuses
+    if (listStatuses?.length) {
+      return listStatuses
+    }
+    const statusesByName = new Map<string, ClickUpListStatus>()
+    for (const task of clickUpTasks) {
+      const status = task.status
+      if (status?.status && !statusesByName.has(status.status)) {
+        statusesByName.set(status.status, status)
+      }
+    }
+    return [...statusesByName.values()]
+  }, [clickUpTasks, selectedClickUpListOption?.list.statuses])
+  const clickUpTaskTypeOptions = useMemo(() => {
+    const typesById = new Map<number, ClickUpTaskTypeOption>()
+    for (const taskType of clickUpAvailableTaskTypes) {
+      typesById.set(taskType.id, taskType)
+    }
+    for (const task of clickUpTasks) {
+      if (task.customItemId === undefined) {
+        continue
+      }
+      const id = task.customItemId ?? 0
+      if (!typesById.has(id)) {
+        typesById.set(id, { id, name: getClickUpTaskTypeLabel(task) })
+      }
+    }
+    return [...typesById.values()]
+  }, [clickUpAvailableTaskTypes, clickUpTasks])
+  useEffect(() => {
+    setClickUpTasks((current) => applyClickUpTaskTypeNames(current, clickUpAvailableTaskTypes))
+  }, [clickUpAvailableTaskTypes, clickUpTasks, setClickUpTasks])
+  const clickUpTagOptions = useMemo(() => {
+    const tagsByName = new Map<string, ClickUpTask['tags'][number]>()
+    for (const tag of clickUpAvailableTags) {
+      const name = getClickUpTagName(tag)
+      if (name) {
+        tagsByName.set(name.toLowerCase(), tag)
+      }
+    }
+    for (const task of clickUpTasks) {
+      for (const tag of task.tags) {
+        const name = getClickUpTagName(tag)
+        if (name && !tagsByName.has(name.toLowerCase())) {
+          tagsByName.set(name.toLowerCase(), tag)
+        }
+      }
+    }
+    return [...tagsByName.values()]
+  }, [clickUpAvailableTags, clickUpTasks])
+  const newClickUpTaskListOption = useMemo(() => {
+    const listId = newClickUpTaskListId ?? selectedClickUpListId
+    return listId ? (clickUpListOptions.find((option) => option.list.id === listId) ?? null) : null
+  }, [clickUpListOptions, newClickUpTaskListId, selectedClickUpListId])
+  const newClickUpTaskStatusOptions = useMemo(() => {
+    const listStatuses = newClickUpTaskListOption?.list.statuses
+    return listStatuses?.length ? listStatuses : clickUpStatusOptions
+  }, [clickUpStatusOptions, newClickUpTaskListOption])
+  const clickUpVirtualizer = useVirtualizer({
+    count: clickUpTaskRows.length + (clickUpLoading && displayedClickUpTasks.length > 0 ? 1 : 0),
+    getScrollElement: () => clickUpTaskScrollRef.current,
+    estimateSize: () => CLICKUP_TASK_ROW_ESTIMATE,
+    overscan: CLICKUP_TASK_ROW_OVERSCAN,
+    getItemKey: (index) =>
+      clickUpTaskRows[index]?.task?.id ??
+      (clickUpTaskRows[index]?.composerParentId
+        ? `clickup-composer:${clickUpTaskRows[index]?.composerParentId}`
+        : `clickup-loading:${clickUpTaskRows[index]?.loadingParentId ?? index}`)
+  })
+  const clickUpVirtualRows = clickUpVirtualizer.getVirtualItems()
+  const clickUpGridTemplateColumns = useMemo(() => {
+    const columns = ['minmax(0,1fr)']
+    for (const property of CLICKUP_DISPLAY_PROPERTIES) {
+      if (clickUpDisplayProperties.has(property)) {
+        columns.push(`${clickUpColumnWidths[property]}px`)
+      }
+    }
+    columns.push('78px')
+    return columns.join(' ')
+  }, [clickUpColumnWidths, clickUpDisplayProperties])
+  const visibleClickUpResizeColumns = useMemo(
+    () => CLICKUP_DISPLAY_PROPERTIES.filter((property) => clickUpDisplayProperties.has(property)),
+    [clickUpDisplayProperties]
+  )
+  const clickUpColumnLabels: Record<ClickUpResizableColumn, string> = {
+    type: translate('auto.components.TaskPage.clickupTaskType', 'Type'),
+    status: translate('auto.components.TaskPage.154b0fa623', 'Status'),
+    priority: translate('auto.components.TaskPage.c8d5bec5f7', 'Priority'),
+    tags: translate('auto.components.TaskPage.clickupTags', 'Tags'),
+    assignees: translate('auto.components.TaskPage.clickupAssignees', 'Assignees'),
+    updated: translate('auto.components.TaskPage.f362667d55', 'Updated')
+  }
+  const clickUpResizeLabels: Record<ClickUpResizableColumn, string> = {
+    type: translate('auto.components.TaskPage.clickupResizeTypeColumn', 'Resize type column'),
+    status: translate('auto.components.TaskPage.clickupResizeStatusColumn', 'Resize status column'),
+    priority: translate(
+      'auto.components.TaskPage.clickupResizePriorityColumn',
+      'Resize priority column'
+    ),
+    tags: translate('auto.components.TaskPage.clickupResizeTagsColumn', 'Resize tags column'),
+    assignees: translate(
+      'auto.components.TaskPage.clickupResizeAssigneesColumn',
+      'Resize assignees column'
+    ),
+    updated: translate(
+      'auto.components.TaskPage.clickupResizeUpdatedColumn',
+      'Resize updated column'
+    )
+  }
+  const startClickUpColumnResize = useCallback(
+    (column: ClickUpResizableColumn, event: React.PointerEvent<HTMLButtonElement>): void => {
+      event.preventDefault()
+      event.stopPropagation()
+      event.currentTarget.setPointerCapture(event.pointerId)
+      setActiveClickUpResizeColumn(column)
+
+      const startX = event.clientX
+      const startWidth = clickUpColumnWidths[column]
+      const previousCursor = document.body.style.cursor
+      const previousUserSelect = document.body.style.userSelect
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+
+      const handlePointerMove = (moveEvent: PointerEvent): void => {
+        const nextWidth = getClickUpResizedColumnWidth({
+          startWidth,
+          startX,
+          currentX: moveEvent.clientX,
+          minWidth: CLICKUP_COLUMN_MIN_WIDTHS[column],
+          maxWidth: CLICKUP_COLUMN_MAX_WIDTHS[column]
+        })
+        setClickUpColumnWidths((current) =>
+          current[column] === nextWidth ? current : { ...current, [column]: nextWidth }
+        )
+      }
+
+      const finishResize = (): void => {
+        setActiveClickUpResizeColumn(null)
+        document.body.style.cursor = previousCursor
+        document.body.style.userSelect = previousUserSelect
+        window.removeEventListener('pointermove', handlePointerMove)
+        window.removeEventListener('pointerup', finishResize)
+        window.removeEventListener('pointercancel', finishResize)
+      }
+
+      window.addEventListener('pointermove', handlePointerMove)
+      window.addEventListener('pointerup', finishResize)
+      window.addEventListener('pointercancel', finishResize)
+    },
+    [clickUpColumnWidths]
+  )
+  useEffect(() => {
+    return () => {
+      if (clickUpIdCopyResetTimerRef.current !== null) {
+        window.clearTimeout(clickUpIdCopyResetTimerRef.current)
+      }
+    }
+  }, [])
+
+  const copyClickUpTaskIdentifier = useCallback(async (identifier: string): Promise<void> => {
+    try {
+      await window.api.ui.writeClipboardText(identifier)
+      setCopiedClickUpTaskId(identifier)
+      if (clickUpIdCopyResetTimerRef.current !== null) {
+        window.clearTimeout(clickUpIdCopyResetTimerRef.current)
+      }
+      clickUpIdCopyResetTimerRef.current = window.setTimeout(() => {
+        clickUpIdCopyResetTimerRef.current = null
+        setCopiedClickUpTaskId(null)
+      }, 1500)
+    } catch {
+      toast.error(
+        translate('auto.components.TaskPage.clickupCopyIdFailed', 'Failed to copy task ID.')
+      )
+    }
+  }, [])
+
+  const openNewClickUpTaskDialog = useCallback((): void => {
+    const listId = selectedClickUpListId ?? clickUpListOptions[0]?.list.id ?? null
+    const listOption = listId
+      ? (clickUpListOptions.find((option) => option.list.id === listId) ?? null)
+      : null
+    setNewClickUpTaskTitle('')
+    setNewClickUpTaskDescription('')
+    setNewClickUpTaskListId(listId)
+    setNewClickUpTaskStatus(listOption?.list.statuses?.[0]?.status ?? '')
+    setNewClickUpTaskPriority('')
+    setNewClickUpTaskTypeId('')
+    setNewClickUpTaskTagNames([])
+    setNewClickUpTaskOpen(true)
+  }, [clickUpListOptions, selectedClickUpListId])
+
   useEffect(() => {
     if (taskResumeAppliedRef.current || !persistedUIReady || !settings) {
       return
@@ -4716,6 +6232,22 @@ export default function TaskPage(): React.JSX.Element {
     setActiveJiraPreset(jiraPreset)
     setJiraSearchInput(jiraQuery)
     setAppliedJiraSearch(jiraQuery)
+
+    const clickUpQuery = taskResumeState?.clickUpQuery ?? ''
+    pendingClickUpScopeRef.current =
+      taskResumeState?.clickUpSpaceId || taskResumeState?.clickUpListId
+        ? {
+            workspaceId: taskResumeState.clickUpWorkspaceId,
+            spaceId: taskResumeState.clickUpSpaceId,
+            listId: taskResumeState.clickUpListId
+          }
+        : null
+    setSelectedClickUpSpaceId(taskResumeState?.clickUpSpaceId ?? null)
+    setSelectedClickUpListId(taskResumeState?.clickUpListId ?? null)
+    setSelectedClickUpViewId(taskResumeState?.clickUpViewId ?? null)
+    setClickUpSearchInput(clickUpQuery)
+    setAppliedClickUpSearch(clickUpQuery)
+    setClickUpShowClosedTasks(taskResumeState?.clickUpShowClosedTasks ?? false)
 
     // Why: settings and persisted UI hydrate asynchronously. Apply the restored
     // Tasks context exactly once so later source/filter clicks remain local.
@@ -5941,7 +7473,18 @@ export default function TaskPage(): React.JSX.Element {
       setNewJiraIssueCustomFieldValues({})
       setNewJiraIssueSubmitting(false)
     }
-  }, [newJiraIssueOpen, newLinearIssueOpen, providerRuntimeContextKey])
+    if (newClickUpTaskOpen) {
+      setNewClickUpTaskOpen(false)
+      setNewClickUpTaskTitle('')
+      setNewClickUpTaskDescription('')
+      setNewClickUpTaskListId(null)
+      setNewClickUpTaskStatus('')
+      setNewClickUpTaskPriority('')
+      setNewClickUpTaskTypeId('')
+      setNewClickUpTaskTagNames([])
+      setNewClickUpTaskSubmitting(false)
+    }
+  }, [newClickUpTaskOpen, newJiraIssueOpen, newLinearIssueOpen, providerRuntimeContextKey])
 
   const sortedAvailableJiraProjects = useMemo(
     () =>
@@ -7283,6 +8826,132 @@ export default function TaskPage(): React.JSX.Element {
     visibleJiraCreateFields
   ])
 
+  const handleCreateNewClickUpTask = useCallback(async (): Promise<void> => {
+    const listId = newClickUpTaskListId ?? selectedClickUpListId
+    const title = newClickUpTaskTitle.trim()
+    if (!listId || !title || newClickUpTaskSubmitting) {
+      return
+    }
+
+    setNewClickUpTaskSubmitting(true)
+    const submitProviderRuntimeContextKey = providerRuntimeContextKey
+    try {
+      const priority = newClickUpTaskPriority ? Number(newClickUpTaskPriority) : undefined
+      const customItemId = newClickUpTaskTypeId ? Number(newClickUpTaskTypeId) : undefined
+      const tagNames = newClickUpTaskTagNames.map((tagName) => tagName.trim()).filter(Boolean)
+      const result = await clickUpCreateTask(clickUpTaskSourceContext ?? settings, {
+        listId,
+        name: title,
+        description: newClickUpTaskDescription.trim() || undefined,
+        status: newClickUpTaskStatus || undefined,
+        priority: Number.isFinite(priority) ? priority : undefined,
+        customItemId: Number.isFinite(customItemId) ? customItemId : undefined,
+        tagNames: tagNames.length > 0 ? tagNames : undefined,
+        workspaceId: selectedClickUpWorkspaceId ?? undefined
+      })
+      if (submitProviderRuntimeContextKey !== providerRuntimeContextKeyRef.current) {
+        return
+      }
+      if (!result.ok) {
+        toast.error(
+          result.error ||
+            translate('auto.components.TaskPage.clickupCreateFailed', 'Failed to create task.')
+        )
+        return
+      }
+      toast.success(
+        translate('auto.components.TaskPage.cb98f0350c', 'Created {{value0}}', {
+          value0: title
+        }),
+        {
+          action: result.url
+            ? {
+                label: translate('auto.components.TaskPage.9c57663908', 'View'),
+                onClick: () => window.api.shell.openUrl(result.url)
+              }
+            : undefined
+        }
+      )
+      setNewClickUpTaskOpen(false)
+      setNewClickUpTaskTitle('')
+      setNewClickUpTaskDescription('')
+      setNewClickUpTaskListId(null)
+      setNewClickUpTaskStatus('')
+      setNewClickUpTaskPriority('')
+      setNewClickUpTaskTypeId('')
+      setNewClickUpTaskTagNames([])
+      setSelectedClickUpListId(listId)
+      setTaskResumeState({
+        clickUpWorkspaceId: selectedClickUpWorkspaceId ?? undefined,
+        clickUpSpaceId: selectedClickUpSpaceId ?? undefined,
+        clickUpListId: listId
+      })
+
+      // Why: ClickUp create returns only a tiny payload; hydrate the row before
+      // selecting it so the detail workspace can render properties immediately.
+      void fetchClickUpTask(result.id, listId, selectedClickUpWorkspaceId, {
+        force: true,
+        sourceContext: clickUpTaskSourceContext
+      })
+        .then((task) => {
+          if (submitProviderRuntimeContextKey !== providerRuntimeContextKeyRef.current) {
+            return
+          }
+          if (!task) {
+            setSelectedClickUpTaskId(result.id)
+            setSelectedClickUpTaskDetail(null)
+            setClickUpTaskDetailError(null)
+            setClickUpRefreshNonce((n) => n + 1)
+            return
+          }
+          setClickUpTasks((current) => [
+            task,
+            ...current.filter((currentTask) => currentTask.id !== task.id)
+          ])
+          setSelectedClickUpTaskId(task.id)
+          setSelectedClickUpTaskDetail(task)
+          setClickUpTaskDetailError(null)
+        })
+        .catch(() => {
+          if (submitProviderRuntimeContextKey !== providerRuntimeContextKeyRef.current) {
+            return
+          }
+          setSelectedClickUpTaskId(result.id)
+          setSelectedClickUpTaskDetail(null)
+          setClickUpTaskDetailError(null)
+          setClickUpRefreshNonce((n) => n + 1)
+        })
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : translate('auto.components.TaskPage.clickupCreateFailed', 'Failed to create task.')
+      )
+    } finally {
+      if (submitProviderRuntimeContextKey === providerRuntimeContextKeyRef.current) {
+        setNewClickUpTaskSubmitting(false)
+      }
+    }
+  }, [
+    clickUpTaskSourceContext,
+    fetchClickUpTask,
+    newClickUpTaskDescription,
+    newClickUpTaskListId,
+    newClickUpTaskPriority,
+    newClickUpTaskStatus,
+    newClickUpTaskSubmitting,
+    newClickUpTaskTagNames,
+    newClickUpTaskTitle,
+    newClickUpTaskTypeId,
+    providerRuntimeContextKey,
+    selectedClickUpListId,
+    selectedClickUpSpaceId,
+    selectedClickUpWorkspaceId,
+    setClickUpTasks,
+    setTaskResumeState,
+    settings
+  ])
+
   const githubTasksBusy = tasksLoading || tasksRefreshing || tasksFiltering
 
   useEffect(() => {
@@ -7293,6 +8962,7 @@ export default function TaskPage(): React.JSX.Element {
       newIssueOpen ||
       newLinearIssueOpen ||
       newJiraIssueOpen ||
+      newClickUpTaskOpen ||
       activeModal !== 'none'
     ) {
       return
@@ -7333,6 +9003,7 @@ export default function TaskPage(): React.JSX.Element {
     closeTaskPage,
     dialogWorkItem,
     newIssueOpen,
+    newClickUpTaskOpen,
     newLinearIssueOpen,
     newJiraIssueOpen,
     selectedLinearIssue
@@ -7348,9 +9019,15 @@ export default function TaskPage(): React.JSX.Element {
     if (!jiraStatusReady) {
       void checkJiraConnection()
     }
+    if (!clickUpStatusReady) {
+      void checkClickUpConnection()
+    }
   }, [
+    checkClickUpConnection,
     checkJiraConnection,
     checkLinearConnection,
+    clickUpStatusContextKey,
+    clickUpStatusReady,
     expectedPreflightContextKey,
     jiraStatusContextKey,
     jiraStatusReady,
@@ -7865,6 +9542,18 @@ export default function TaskPage(): React.JSX.Element {
   ])
 
   useEffect(() => {
+    if (
+      clickUpTaskGraph?.bulkStatus === 'complete' &&
+      selectedClickUpTaskId &&
+      !clickUpTaskGraph.tasksById[selectedClickUpTaskId]
+    ) {
+      setSelectedClickUpTaskId(null)
+      setSelectedClickUpTaskDetail(null)
+      setClickUpTaskDetailError(null)
+    }
+  }, [clickUpTaskGraph, selectedClickUpTaskId])
+
+  useEffect(() => {
     if (!taskResumeApplied) {
       return
     }
@@ -7991,6 +9680,1301 @@ export default function TaskPage(): React.JSX.Element {
     taskResumeApplied,
     taskSource
   ])
+
+  useEffect(() => {
+    if (!taskResumeApplied) {
+      return
+    }
+    const timeout = window.setTimeout(() => {
+      setAppliedClickUpSearch(clickUpSearchInput)
+    }, TASK_SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timeout)
+  }, [clickUpSearchInput, taskResumeApplied])
+
+  useEffect(() => {
+    if (!taskResumeApplied) {
+      return
+    }
+    const query = appliedClickUpSearch.trim()
+    setTaskResumeState({ clickUpQuery: query })
+  }, [appliedClickUpSearch, setTaskResumeState, taskResumeApplied])
+
+  useEffect(() => {
+    clickUpVirtualizer.scrollToOffset(0)
+  }, [
+    appliedClickUpSearch,
+    clickUpViewMode,
+    clickUpVirtualizer,
+    selectedClickUpListId,
+    selectedClickUpViewId
+  ])
+
+  const restoreClickUpAllTasksLayout = useCallback((): void => {
+    const subtaskMode =
+      taskResumeState?.clickUpSubtaskMode ??
+      (taskResumeState?.clickUpViewMode === 'flat' ? 'separate' : 'collapsed')
+    setClickUpSubtaskMode(subtaskMode)
+    setClickUpGrouping(taskResumeState?.clickUpGrouping ?? 'none')
+    setClickUpGroupDirection(taskResumeState?.clickUpGroupDirection ?? 'ascending')
+    setClickUpOrdering(taskResumeState?.clickUpOrdering ?? 'updated')
+    setClickUpShowClosedTasks(taskResumeState?.clickUpShowClosedTasks ?? false)
+    setClickUpDisplayProperties(
+      new Set(taskResumeState?.clickUpDisplayProperties ?? CLICKUP_DISPLAY_PROPERTIES)
+    )
+    setCollapsedClickUpGroupIds(new Set())
+    setClickUpColumnWidths({ ...clickUpAllTasksColumnWidthsRef.current })
+  }, [taskResumeState])
+
+  const clearClickUpSavedView = useCallback((): void => {
+    restoreClickUpAllTasksLayout()
+    setSelectedClickUpViewId(null)
+  }, [restoreClickUpAllTasksLayout])
+
+  useEffect(() => {
+    if (!clickUpListViewsState.loaded || !selectedClickUpViewId) {
+      return
+    }
+    const views = getSelectableClickUpSavedViews(clickUpListViewsState.data)
+    if (!views.some((view) => view.id === selectedClickUpViewId)) {
+      clearClickUpSavedView()
+      setTaskResumeState({ clickUpViewId: undefined })
+    }
+  }, [
+    clearClickUpSavedView,
+    clickUpListViewsState.data,
+    clickUpListViewsState.loaded,
+    selectedClickUpViewId,
+    setTaskResumeState
+  ])
+
+  useEffect(() => {
+    if (!selectedClickUpSavedViewLayout) {
+      return
+    }
+    const layout = selectedClickUpSavedViewLayout
+    if (layout.grouping !== undefined) {
+      setClickUpGrouping(layout.grouping)
+    }
+    if (layout.groupDirection !== undefined) {
+      setClickUpGroupDirection(layout.groupDirection)
+    }
+    if (layout.collapsedGroupIds !== undefined) {
+      setCollapsedClickUpGroupIds(new Set(layout.collapsedGroupIds))
+    }
+    if (layout.subtaskMode !== undefined) {
+      setClickUpSubtaskMode(layout.subtaskMode)
+      if (layout.subtaskMode === 'collapsed') {
+        setExpandedClickUpTaskIds(new Set())
+      }
+    }
+    if (layout.ordering !== undefined) {
+      setClickUpOrdering(layout.ordering)
+    }
+    if (layout.showClosedTasks !== undefined) {
+      setClickUpShowClosedTasks(layout.showClosedTasks)
+    }
+    if (layout.displayProperties !== undefined) {
+      setClickUpDisplayProperties(new Set(layout.displayProperties))
+    }
+    if (layout.columnWidths !== undefined) {
+      setClickUpColumnWidths(getClickUpSavedViewColumnWidths(layout.columnWidths))
+    }
+  }, [selectedClickUpSavedViewLayout, setExpandedClickUpTaskIds])
+
+  useEffect(() => {
+    if (!taskResumeApplied) {
+      return
+    }
+    setClickUpTreeExpansion((current) =>
+      resolveClickUpTreeExpansionContext(
+        current,
+        clickUpTreeExpansionContext,
+        taskResumeState?.clickUpExpandedTaskContextKey,
+        taskResumeState?.clickUpExpandedTaskIds ?? []
+      )
+    )
+  }, [
+    clickUpTreeExpansionContext,
+    taskResumeApplied,
+    taskResumeState?.clickUpExpandedTaskContextKey,
+    taskResumeState?.clickUpExpandedTaskIds
+  ])
+
+  const loadClickUpTaskChildren = useCallback(
+    async (task: ClickUpTask): Promise<void> => {
+      if (!selectedClickUpListId || !selectedClickUpWorkspaceId || selectedClickUpViewId) {
+        return
+      }
+      try {
+        await loadClickUpTaskBranch({
+          key: clickUpTaskGraphKey,
+          taskId: task.id,
+          listId: selectedClickUpListId,
+          viewId: selectedClickUpViewId,
+          filter: clickUpTaskFilter,
+          workspaceId: selectedClickUpWorkspaceId,
+          options: { sourceContext: clickUpTaskSourceContext }
+        })
+      } catch (error) {
+        console.warn('[clickup] direct child discovery failed:', error)
+      }
+    },
+    [
+      clickUpTaskFilter,
+      clickUpTaskGraphKey,
+      clickUpTaskSourceContext,
+      loadClickUpTaskBranch,
+      selectedClickUpListId,
+      selectedClickUpViewId,
+      selectedClickUpWorkspaceId
+    ]
+  )
+
+  const selectClickUpSubtaskMode = useCallback(
+    (mode: ClickUpSubtaskMode): void => {
+      setClickUpSubtaskMode(mode)
+      if (mode === 'collapsed') {
+        setExpandedClickUpTaskIds(new Set())
+        return
+      }
+      if (mode === 'expanded') {
+        setExpandedClickUpTaskIds(getClickUpExpandableTaskIds(clickUpTasks, !selectedClickUpViewId))
+      }
+    },
+    [clickUpTasks, selectedClickUpViewId, setExpandedClickUpTaskIds]
+  )
+
+  useEffect(() => {
+    if (clickUpSubtaskMode !== 'expanded') {
+      return
+    }
+    const expandableIds = getClickUpExpandableTaskIds(clickUpTasks, !selectedClickUpViewId)
+    setExpandedClickUpTaskIds((current) => new Set([...current, ...expandableIds]))
+  }, [clickUpSubtaskMode, clickUpTasks, selectedClickUpViewId, setExpandedClickUpTaskIds])
+
+  useEffect(() => {
+    if (selectedClickUpViewId) {
+      return
+    }
+    const taskById = new Map(clickUpTasks.map((task) => [task.id, task]))
+    for (const taskId of getClickUpExpandedTaskIdsNeedingChildLoad(
+      clickUpTasks,
+      expandedClickUpTaskIds,
+      failedClickUpSubtaskParentIds,
+      loadingClickUpSubtaskParentIds,
+      hydratedClickUpSubtaskParentIds
+    )) {
+      const task = taskById.get(taskId)
+      if (task) {
+        void loadClickUpTaskChildren(task)
+      }
+    }
+  }, [
+    clickUpTasks,
+    expandedClickUpTaskIds,
+    failedClickUpSubtaskParentIds,
+    hydratedClickUpSubtaskParentIds,
+    loadClickUpTaskChildren,
+    loadingClickUpSubtaskParentIds,
+    selectedClickUpViewId
+  ])
+
+  const toggleClickUpTaskExpansion = useCallback(
+    (task: ClickUpTask): void => {
+      const expanding = !expandedClickUpTaskIds.has(task.id)
+      if (
+        expanding &&
+        !selectedClickUpViewId &&
+        !loadingClickUpSubtaskParentIds.has(task.id) &&
+        shouldLoadClickUpTaskChildren(task, hydratedClickUpSubtaskParentIds)
+      ) {
+        void loadClickUpTaskChildren(task)
+      }
+      setExpandedClickUpTaskIds((current) => {
+        const next = new Set(current)
+        if (next.has(task.id)) {
+          next.delete(task.id)
+        } else {
+          next.add(task.id)
+        }
+        return next
+      })
+    },
+    [
+      expandedClickUpTaskIds,
+      hydratedClickUpSubtaskParentIds,
+      loadClickUpTaskChildren,
+      loadingClickUpSubtaskParentIds,
+      selectedClickUpViewId,
+      setExpandedClickUpTaskIds
+    ]
+  )
+
+  const openClickUpInlineSubtaskComposer = useCallback(
+    (task: ClickUpTask): void => {
+      setClickUpInlineSubtaskDraft({
+        parentTaskId: task.id,
+        title: '',
+        status: task.status?.status ?? clickUpStatusOptions[0]?.status ?? '',
+        priority: '',
+        taskTypeId: '',
+        tagNames: [],
+        assigneeIds: []
+      })
+      setExpandedClickUpTaskIds((current) => new Set(current).add(task.id))
+      if (
+        !selectedClickUpViewId &&
+        !loadingClickUpSubtaskParentIds.has(task.id) &&
+        shouldLoadClickUpTaskChildren(task, hydratedClickUpSubtaskParentIds)
+      ) {
+        void loadClickUpTaskChildren(task)
+      }
+    },
+    [
+      clickUpStatusOptions,
+      hydratedClickUpSubtaskParentIds,
+      loadClickUpTaskChildren,
+      loadingClickUpSubtaskParentIds,
+      selectedClickUpViewId,
+      setExpandedClickUpTaskIds
+    ]
+  )
+
+  const handleCreateClickUpSubtask = useCallback(async (): Promise<void> => {
+    const draft = clickUpInlineSubtaskDraft
+    const parent = draft ? clickUpTasks.find((task) => task.id === draft.parentTaskId) : undefined
+    const title = draft?.title.trim() ?? ''
+    if (!draft || !parent || !title || clickUpInlineSubtaskSubmitting) {
+      return
+    }
+
+    const submitProviderRuntimeContextKey = providerRuntimeContextKey
+    const loadedChildCount = clickUpTasks.filter((task) => task.parentId === parent.id).length
+    const minimumSubtaskCount = Math.max(parent.subtaskCount ?? 0, loadedChildCount) + 1
+    const priorityOption = CLICKUP_PRIORITY_OPTIONS.find(
+      (option) => String(option.value) === draft.priority
+    )
+    const taskType = clickUpTaskTypeOptions.find((option) => String(option.id) === draft.taskTypeId)
+    const status = clickUpStatusOptions.find((option) => option.status === draft.status)
+    const tags = draft.tagNames.flatMap((name) => {
+      const tag = clickUpTagOptions.find(
+        (option) => getClickUpTagName(option).toLowerCase() === name.toLowerCase()
+      )
+      return tag ?? [{ name }]
+    })
+    const assignees = clickUpAssignableMembers.filter((member) =>
+      draft.assigneeIds.includes(member.id)
+    )
+    const assigneeIds = draft.assigneeIds.map(Number).filter(Number.isFinite)
+
+    setClickUpInlineSubtaskSubmitting(true)
+    try {
+      const result = await clickUpCreateTask(clickUpTaskSourceContext ?? settings, {
+        listId: parent.listId,
+        parentTaskId: parent.id,
+        name: title,
+        status: draft.status || undefined,
+        priority: priorityOption?.value,
+        customItemId: taskType?.id,
+        tagNames: draft.tagNames.length > 0 ? draft.tagNames : undefined,
+        assigneeIds: assigneeIds.length > 0 ? assigneeIds : undefined,
+        workspaceId: selectedClickUpWorkspaceId ?? undefined
+      })
+      if (submitProviderRuntimeContextKey !== providerRuntimeContextKeyRef.current) {
+        return
+      }
+      if (!result.ok) {
+        toast.error(result.error)
+        return
+      }
+
+      const createdAt = new Date().toISOString()
+      const placeholder: ClickUpTask = {
+        id: result.id,
+        listId: parent.listId,
+        workspaceId: selectedClickUpWorkspaceId ?? undefined,
+        parentId: parent.id,
+        title,
+        url: result.url,
+        customItemId: taskType?.id ?? 0,
+        customItemName: taskType?.name,
+        status,
+        priority: priorityOption
+          ? {
+              id: String(priorityOption.value),
+              priority: getClickUpPriorityLabel(priorityOption),
+              color: priorityOption.color,
+              orderindex: String(priorityOption.value)
+            }
+          : undefined,
+        tags,
+        assignees,
+        createdAt,
+        updatedAt: createdAt
+      }
+      const createdSubtask: ClickUpTask = result.task
+        ? {
+            ...placeholder,
+            ...result.task,
+            parentId: parent.id,
+            tags: result.task.tags.length > 0 ? result.task.tags : placeholder.tags
+          }
+        : placeholder
+
+      setClickUpTasks((current) =>
+        upsertClickUpCreatedSubtask(current, parent.id, createdSubtask, minimumSubtaskCount)
+      )
+      setClickUpInlineCreatedTaskIds((current) =>
+        current.includes(createdSubtask.id) ? current : [...current, createdSubtask.id]
+      )
+      setClickUpInlineSubtaskDraft(null)
+      toast.success(
+        translate('auto.components.TaskPage.cb98f0350c', 'Created {{value0}}', { value0: title })
+      )
+
+      // Why: a branch response already in flight may contain the old child list;
+      // re-upserting the hydrated task keeps the new row visible and in place.
+      void fetchClickUpTask(result.id, parent.listId, selectedClickUpWorkspaceId, {
+        force: true,
+        sourceContext: clickUpTaskSourceContext
+      })
+        .then((task) => {
+          if (submitProviderRuntimeContextKey !== providerRuntimeContextKeyRef.current) {
+            return
+          }
+          const hydratedSubtask = task
+            ? {
+                ...createdSubtask,
+                ...task,
+                parentId: parent.id,
+                tags: task.tags.length > 0 ? task.tags : createdSubtask.tags
+              }
+            : createdSubtask
+          setClickUpTasks((current) =>
+            upsertClickUpCreatedSubtask(current, parent.id, hydratedSubtask, minimumSubtaskCount)
+          )
+        })
+        .catch(() => {})
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : translate('auto.components.TaskPage.clickupCreateFailed', 'Failed to create task.')
+      )
+    } finally {
+      if (submitProviderRuntimeContextKey === providerRuntimeContextKeyRef.current) {
+        setClickUpInlineSubtaskSubmitting(false)
+      }
+    }
+  }, [
+    clickUpAssignableMembers,
+    clickUpInlineSubtaskDraft,
+    clickUpInlineSubtaskSubmitting,
+    clickUpStatusOptions,
+    clickUpTagOptions,
+    clickUpTaskSourceContext,
+    clickUpTaskTypeOptions,
+    clickUpTasks,
+    fetchClickUpTask,
+    providerRuntimeContextKey,
+    selectedClickUpWorkspaceId,
+    setClickUpTasks,
+    settings
+  ])
+
+  const toggleClickUpDisplayProperty = useCallback((property: ClickUpDisplayProperty): void => {
+    setClickUpDisplayProperties((current) => {
+      const next = new Set(current)
+      if (next.has(property)) {
+        next.delete(property)
+      } else {
+        next.add(property)
+      }
+      return next
+    })
+  }, [])
+
+  const clickUpOrderingOptions = useMemo(
+    () => [
+      {
+        id: 'updated' as const,
+        label: translate('auto.components.TaskPage.clickupOrderUpdated', 'Updated')
+      },
+      {
+        id: 'priority' as const,
+        label: translate('auto.components.TaskPage.clickupPriority', 'Priority')
+      },
+      {
+        id: 'identity' as const,
+        label: translate('auto.components.TaskPage.clickupOrderIdentity', 'ID / title')
+      }
+    ],
+    []
+  )
+
+  useEffect(() => {
+    if (!selectedClickUpViewId) {
+      clickUpAllTasksColumnWidthsRef.current = clickUpColumnWidths
+    }
+  }, [clickUpColumnWidths, selectedClickUpViewId])
+
+  useEffect(() => {
+    if (!taskResumeApplied || taskSource !== 'clickup') {
+      return
+    }
+    if (pendingClickUpScopeRef.current) {
+      return
+    }
+    setTaskResumeState({
+      clickUpWorkspaceId: selectedClickUpWorkspaceId ?? undefined,
+      clickUpSpaceId: selectedClickUpSpaceId ?? undefined,
+      clickUpListId: selectedClickUpListId ?? undefined,
+      clickUpViewId: selectedClickUpViewId ?? undefined
+    })
+  }, [
+    selectedClickUpListId,
+    selectedClickUpSpaceId,
+    selectedClickUpViewId,
+    selectedClickUpWorkspaceId,
+    setTaskResumeState,
+    taskResumeApplied,
+    taskSource
+  ])
+
+  useEffect(() => {
+    if (!taskResumeApplied || taskSource !== 'clickup' || selectedClickUpViewId) {
+      return
+    }
+    setTaskResumeState({
+      clickUpViewMode,
+      clickUpSubtaskMode,
+      clickUpGrouping,
+      clickUpGroupDirection,
+      clickUpOrdering,
+      clickUpShowClosedTasks,
+      clickUpDisplayProperties: [...clickUpDisplayProperties]
+    })
+  }, [
+    clickUpDisplayProperties,
+    clickUpGroupDirection,
+    clickUpGrouping,
+    clickUpOrdering,
+    clickUpShowClosedTasks,
+    clickUpSubtaskMode,
+    clickUpViewMode,
+    selectedClickUpViewId,
+    setTaskResumeState,
+    taskResumeApplied,
+    taskSource
+  ])
+
+  useEffect(() => {
+    if (
+      !taskResumeApplied ||
+      taskSource !== 'clickup' ||
+      clickUpTreeExpansion.contextKey !== clickUpTreeExpansionContext
+    ) {
+      return
+    }
+    setTaskResumeState({
+      clickUpExpandedTaskContextKey: clickUpTreeExpansionContext,
+      clickUpExpandedTaskIds: [...clickUpTreeExpansion.expandedIds]
+    })
+  }, [
+    clickUpTreeExpansionContext,
+    clickUpTreeExpansion,
+    setTaskResumeState,
+    taskResumeApplied,
+    taskSource
+  ])
+
+  useEffect(() => {
+    if (
+      !taskResumeApplied ||
+      taskSource !== 'clickup' ||
+      !clickUpConnected ||
+      !selectedClickUpWorkspaceId ||
+      !selectedClickUpListId
+    ) {
+      setClickUpAssignableMembers([])
+      setClickUpAssignableMembersError(null)
+      setClickUpAssignableMembersLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setClickUpAssignableMembersLoading(true)
+    setClickUpAssignableMembersError(null)
+    void fetchClickUpAssignableMembers(selectedClickUpListId, selectedClickUpWorkspaceId, {
+      sourceContext: clickUpTaskSourceContext
+    })
+      .then((members) => {
+        if (!cancelled) {
+          setClickUpAssignableMembers(members)
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setClickUpAssignableMembers([])
+          setClickUpAssignableMembersError(
+            error instanceof Error ? error.message : 'Failed to load ClickUp members.'
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setClickUpAssignableMembersLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    clickUpConnected,
+    clickUpTaskSourceContext,
+    fetchClickUpAssignableMembers,
+    selectedClickUpListId,
+    selectedClickUpWorkspaceId,
+    taskResumeApplied,
+    taskSource
+  ])
+
+  useEffect(() => {
+    if (!taskResumeApplied || taskSource !== 'clickup' || !clickUpConnected) {
+      return
+    }
+    if (!selectedClickUpWorkspaceId) {
+      pendingClickUpScopeRef.current = null
+      setClickUpSpaces([])
+      setClickUpListOptions([])
+      setSelectedClickUpSpaceId(null)
+      setSelectedClickUpListId(null)
+      setSelectedClickUpTaskDetail(null)
+      setClickUpTaskDetailError(null)
+      return
+    }
+
+    let cancelled = false
+    setClickUpHierarchyLoading(true)
+    setClickUpError(null)
+    void fetchClickUpSpaces(selectedClickUpWorkspaceId, { sourceContext: clickUpTaskSourceContext })
+      .then((spaces) => {
+        if (cancelled) {
+          return
+        }
+        setClickUpSpaces(spaces)
+        const pending = pendingClickUpScopeRef.current
+        const pendingSpaceId =
+          pending &&
+          (!pending.workspaceId || pending.workspaceId === selectedClickUpWorkspaceId) &&
+          pending.spaceId &&
+          spaces.some((space) => space.id === pending.spaceId)
+            ? pending.spaceId
+            : null
+        setSelectedClickUpSpaceId((current) => {
+          if (pendingSpaceId) {
+            return pendingSpaceId
+          }
+          return current && spaces.some((space) => space.id === current)
+            ? current
+            : (spaces[0]?.id ?? null)
+        })
+        if (pending && pending.spaceId && !pendingSpaceId) {
+          pendingClickUpScopeRef.current = null
+          setSelectedClickUpListId(null)
+        }
+        setClickUpHierarchyLoading(false)
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return
+        }
+        setClickUpSpaces([])
+        setClickUpListOptions([])
+        pendingClickUpScopeRef.current = null
+        setSelectedClickUpSpaceId(null)
+        setSelectedClickUpListId(null)
+        setSelectedClickUpTaskDetail(null)
+        setClickUpTaskDetailError(null)
+        setClickUpError(error instanceof Error ? error.message : 'Failed to load ClickUp spaces.')
+        setClickUpHierarchyLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    clickUpConnected,
+    clickUpTaskSourceContext,
+    fetchClickUpSpaces,
+    selectedClickUpWorkspaceId,
+    taskResumeApplied,
+    taskSource
+  ])
+
+  useEffect(() => {
+    if (!taskResumeApplied || taskSource !== 'clickup' || !clickUpConnected) {
+      return
+    }
+    if (!selectedClickUpWorkspaceId || !selectedClickUpSpaceId) {
+      setClickUpListOptions([])
+      if (!pendingClickUpScopeRef.current?.listId) {
+        setSelectedClickUpListId(null)
+      }
+      setSelectedClickUpTaskDetail(null)
+      setClickUpTaskDetailError(null)
+      return
+    }
+
+    let cancelled = false
+    setClickUpHierarchyLoading(true)
+    setClickUpError(null)
+    void Promise.all([
+      fetchClickUpFolderlessLists(selectedClickUpSpaceId, selectedClickUpWorkspaceId, {
+        sourceContext: clickUpTaskSourceContext
+      }),
+      fetchClickUpFolders(selectedClickUpSpaceId, selectedClickUpWorkspaceId, {
+        sourceContext: clickUpTaskSourceContext
+      })
+    ])
+      .then(async ([folderlessLists, folders]) => {
+        const folderListGroups = await Promise.all(
+          folders.map(async (folder) => ({
+            folder,
+            lists: await fetchClickUpFolderLists(
+              folder.id,
+              selectedClickUpSpaceId,
+              selectedClickUpWorkspaceId,
+              { sourceContext: clickUpTaskSourceContext }
+            )
+          }))
+        )
+        return [
+          ...folderlessLists.map((list) => ({
+            list,
+            label: `${selectedClickUpSpace?.name ?? 'Space'} / ${list.name}`
+          })),
+          ...folderListGroups.flatMap(({ folder, lists }) =>
+            lists.map((list) => ({
+              list,
+              label: `${selectedClickUpSpace?.name ?? 'Space'} / ${folder.name} / ${list.name}`
+            }))
+          )
+        ]
+      })
+      .then((options) => {
+        if (cancelled) {
+          return
+        }
+        setClickUpListOptions(options)
+        const pending = pendingClickUpScopeRef.current
+        const pendingListId =
+          pending &&
+          (!pending.workspaceId || pending.workspaceId === selectedClickUpWorkspaceId) &&
+          (!pending.spaceId || pending.spaceId === selectedClickUpSpaceId) &&
+          pending.listId &&
+          options.some((option) => option.list.id === pending.listId)
+            ? pending.listId
+            : null
+        pendingClickUpScopeRef.current = null
+        setSelectedClickUpListId((current) =>
+          pendingListId
+            ? pendingListId
+            : current && options.some((option) => option.list.id === current)
+              ? current
+              : (options[0]?.list.id ?? null)
+        )
+        setClickUpHierarchyLoading(false)
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return
+        }
+        setClickUpListOptions([])
+        pendingClickUpScopeRef.current = null
+        setSelectedClickUpListId(null)
+        setSelectedClickUpTaskDetail(null)
+        setClickUpTaskDetailError(null)
+        setClickUpError(error instanceof Error ? error.message : 'Failed to load ClickUp lists.')
+        setClickUpHierarchyLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    clickUpConnected,
+    clickUpTaskSourceContext,
+    fetchClickUpFolderlessLists,
+    fetchClickUpFolderLists,
+    fetchClickUpFolders,
+    selectedClickUpSpace?.name,
+    selectedClickUpSpaceId,
+    selectedClickUpWorkspaceId,
+    taskResumeApplied,
+    taskSource
+  ])
+
+  useEffect(() => {
+    if (!taskResumeApplied || taskSource !== 'clickup' || !clickUpConnected) {
+      return
+    }
+    if (!selectedClickUpWorkspaceId || !selectedClickUpSpaceId) {
+      setClickUpAvailableTags([])
+      return
+    }
+
+    let cancelled = false
+    void fetchClickUpSpaceTags(selectedClickUpSpaceId, selectedClickUpWorkspaceId, {
+      sourceContext: clickUpTaskSourceContext
+    })
+      .then((tags) => {
+        if (!cancelled) {
+          setClickUpAvailableTags(tags)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setClickUpAvailableTags([])
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    clickUpConnected,
+    clickUpTaskSourceContext,
+    fetchClickUpSpaceTags,
+    selectedClickUpSpaceId,
+    selectedClickUpWorkspaceId,
+    taskResumeApplied,
+    taskSource
+  ])
+
+  useEffect(() => {
+    if (!taskResumeApplied || taskSource !== 'clickup' || !clickUpConnected) {
+      return
+    }
+    if (!selectedClickUpWorkspaceId) {
+      setClickUpAvailableTaskTypes([])
+      return
+    }
+
+    let cancelled = false
+    void fetchClickUpTaskTypes(selectedClickUpWorkspaceId, {
+      sourceContext: clickUpTaskSourceContext
+    })
+      .then((taskTypes) => {
+        if (!cancelled) {
+          setClickUpAvailableTaskTypes(taskTypes)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setClickUpAvailableTaskTypes([])
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    clickUpConnected,
+    clickUpTaskSourceContext,
+    fetchClickUpTaskTypes,
+    selectedClickUpWorkspaceId,
+    taskResumeApplied,
+    taskSource
+  ])
+
+  useEffect(() => {
+    if (!taskResumeApplied || taskSource !== 'clickup' || !clickUpConnected) {
+      return
+    }
+    if (!selectedClickUpWorkspaceId || !selectedClickUpListId) {
+      setSelectedClickUpTaskId(null)
+      setSelectedClickUpTaskDetail(null)
+      setClickUpTaskDetailError(null)
+      return
+    }
+
+    let cancelled = false
+    setClickUpError(null)
+    if (clickUpShowClosedTasks && !selectedClickUpViewId) {
+      seedClickUpTaskGraph(clickUpTaskGraphKey, clickUpOpenTaskGraphKey)
+    }
+    const lastHandledRefresh = clickUpRefreshHandledRef.current.get(clickUpTaskGraphKey) ?? 0
+    const force = clickUpRefreshNonce > lastHandledRefresh
+    clickUpRefreshHandledRef.current.set(clickUpTaskGraphKey, clickUpRefreshNonce)
+    void loadClickUpTaskGraph({
+      key: clickUpTaskGraphKey,
+      listId: selectedClickUpListId,
+      viewId: selectedClickUpViewId,
+      filter: clickUpTaskFilter,
+      workspaceId: selectedClickUpWorkspaceId,
+      options: { sourceContext: clickUpTaskSourceContext },
+      force,
+      revalidate: !force
+    }).catch((error) => {
+      if (cancelled) {
+        return
+      }
+      setClickUpError(error instanceof Error ? error.message : 'Failed to load ClickUp tasks.')
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    clickUpConnected,
+    clickUpOpenTaskGraphKey,
+    clickUpRefreshNonce,
+    clickUpShowClosedTasks,
+    clickUpTaskFilter,
+    clickUpTaskGraphKey,
+    clickUpTaskSourceContext,
+    loadClickUpTaskGraph,
+    seedClickUpTaskGraph,
+    selectedClickUpListId,
+    selectedClickUpViewId,
+    selectedClickUpWorkspaceId,
+    taskResumeApplied,
+    taskSource
+  ])
+
+  const clickUpActivityRefreshNonce = useClickUpTaskSync({
+    enabled: taskResumeApplied && taskSource === 'clickup' && clickUpConnected,
+    graphKey: clickUpTaskGraphKey,
+    listId: selectedClickUpListId,
+    viewId: selectedClickUpViewId,
+    workspaceId: selectedClickUpWorkspaceId,
+    filter: clickUpTaskFilter,
+    sourceContext: clickUpTaskSourceContext,
+    expandedTaskIds: expandedClickUpTaskIds,
+    selectedTaskId: selectedClickUpTaskId,
+    onSelectedTaskRefresh: setSelectedClickUpTaskDetail
+  })
+
+  useEffect(() => {
+    if (
+      selectedClickUpTaskId &&
+      (Boolean(selectedClickUpViewId) || !clickUpShowClosedTasks) &&
+      !visibleClickUpTasks.some((task) => task.id === selectedClickUpTaskId)
+    ) {
+      closeClickUpDetailPage()
+    }
+  }, [
+    clickUpShowClosedTasks,
+    closeClickUpDetailPage,
+    selectedClickUpTaskId,
+    selectedClickUpViewId,
+    visibleClickUpTasks
+  ])
+
+  useEffect(() => {
+    if (
+      !taskResumeApplied ||
+      taskSource !== 'clickup' ||
+      !clickUpConnected ||
+      !selectedClickUpWorkspaceId ||
+      !selectedClickUpListId ||
+      !selectedClickUpTaskId
+    ) {
+      setSelectedClickUpTaskDetail(null)
+      setClickUpTaskDetailLoading(false)
+      setClickUpTaskDetailError(null)
+      return
+    }
+
+    let cancelled = false
+    setClickUpTaskDetailLoading(true)
+    setClickUpTaskDetailError(null)
+    void fetchClickUpTask(
+      selectedClickUpTaskId,
+      selectedClickUpListId,
+      selectedClickUpWorkspaceId,
+      {
+        force: clickUpRefreshNonce > 0,
+        sourceContext: clickUpTaskSourceContext
+      }
+    )
+      .then((task) => {
+        if (cancelled) {
+          return
+        }
+        setSelectedClickUpTaskDetail(task)
+        setClickUpTaskDetailLoading(false)
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return
+        }
+        setSelectedClickUpTaskDetail(null)
+        setClickUpTaskDetailError(
+          error instanceof Error ? error.message : 'Failed to load ClickUp task.'
+        )
+        setClickUpTaskDetailLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    clickUpConnected,
+    clickUpRefreshNonce,
+    clickUpTaskSourceContext,
+    fetchClickUpTask,
+    selectedClickUpListId,
+    selectedClickUpTaskId,
+    selectedClickUpWorkspaceId,
+    taskResumeApplied,
+    taskSource
+  ])
+
+  const openComposerForClickUpTask = useCallback(
+    (task: ClickUpTask): void => {
+      const identifier = getClickUpTaskIdentifier(task)
+      const linkedWorkItem: LinkedWorkItemSummary = {
+        type: 'issue',
+        provider: 'clickup',
+        number: 0,
+        title: `${identifier} ${task.title}`,
+        url: task.url,
+        clickUpIdentifier: identifier
+      }
+      openModal('new-workspace-composer', {
+        linkedWorkItem,
+        taskSourceContext: clickUpTaskSourceContext,
+        prefilledName: getClickUpTaskWorkspaceSeed(task),
+        telemetrySource: 'sidebar'
+      })
+    },
+    [clickUpTaskSourceContext, openModal]
+  )
+
+  const handleUseClickUpTask = useCallback(
+    (task: ClickUpTask): void => {
+      openComposerForClickUpTask(task)
+    },
+    [openComposerForClickUpTask]
+  )
+
+  const setClickUpFieldUpdating = useCallback(
+    (
+      taskId: string,
+      field: 'assignees' | 'priority' | 'status' | 'tags' | 'type',
+      updating: boolean
+    ): void => {
+      const key = `${field}:${taskId}`
+      setUpdatingClickUpFields((current) => {
+        const next = new Set(current)
+        if (updating) {
+          next.add(key)
+        } else {
+          next.delete(key)
+        }
+        return next
+      })
+    },
+    []
+  )
+
+  const handleClickUpStatusChange = useCallback(
+    async (task: ClickUpTask, status: ClickUpListStatus) => {
+      if (task.status?.status === status.status) {
+        return
+      }
+      setClickUpFieldUpdating(task.id, 'status', true)
+      try {
+        const result = await updateClickUpTask(
+          task.id,
+          { status: status.status },
+          selectedClickUpWorkspaceId,
+          { sourceContext: clickUpTaskSourceContext }
+        )
+        if (!result.ok) {
+          toast.error(result.error)
+          return
+        }
+        setClickUpTasks((current) =>
+          current.map((currentTask) =>
+            currentTask.id === task.id ? { ...currentTask, status } : currentTask
+          )
+        )
+        patchClickUpTask(task.id, { status }, { sourceContext: clickUpTaskSourceContext })
+        if (selectedClickUpTaskId === task.id) {
+          setSelectedClickUpTaskDetail((current) => (current ? { ...current, status } : current))
+        }
+      } finally {
+        setClickUpFieldUpdating(task.id, 'status', false)
+      }
+    },
+    [
+      clickUpTaskSourceContext,
+      patchClickUpTask,
+      selectedClickUpTaskId,
+      selectedClickUpWorkspaceId,
+      setClickUpTasks,
+      setClickUpFieldUpdating,
+      updateClickUpTask
+    ]
+  )
+
+  const handleClickUpTypeChange = useCallback(
+    async (task: ClickUpTask, taskType: ClickUpTaskTypeOption) => {
+      if ((task.customItemId ?? 0) === taskType.id) {
+        return
+      }
+      setClickUpFieldUpdating(task.id, 'type', true)
+      try {
+        const result = await updateClickUpTask(
+          task.id,
+          { customItemId: taskType.id },
+          selectedClickUpWorkspaceId,
+          { sourceContext: clickUpTaskSourceContext }
+        )
+        if (!result.ok) {
+          toast.error(result.error)
+          return
+        }
+        const patch: Partial<ClickUpTask> = {
+          customItemId: taskType.id,
+          customItemName: taskType.name
+        }
+        setClickUpTasks((current) =>
+          current.map((currentTask) =>
+            currentTask.id === task.id ? { ...currentTask, ...patch } : currentTask
+          )
+        )
+        patchClickUpTask(task.id, patch, { sourceContext: clickUpTaskSourceContext })
+        if (selectedClickUpTaskId === task.id) {
+          setSelectedClickUpTaskDetail((current) => (current ? { ...current, ...patch } : current))
+        }
+      } finally {
+        setClickUpFieldUpdating(task.id, 'type', false)
+      }
+    },
+    [
+      clickUpTaskSourceContext,
+      patchClickUpTask,
+      selectedClickUpTaskId,
+      selectedClickUpWorkspaceId,
+      setClickUpTasks,
+      setClickUpFieldUpdating,
+      updateClickUpTask
+    ]
+  )
+
+  const handleClickUpPriorityChange = useCallback(
+    async (task: ClickUpTask, priority: ClickUpPriorityOption | null) => {
+      const currentValue = task.priority?.priority
+        ? CLICKUP_PRIORITY_OPTIONS.find(
+            (option) => option.key === task.priority?.priority.toLowerCase()
+          )?.value
+        : null
+      if ((priority?.value ?? null) === (currentValue ?? null)) {
+        return
+      }
+      setClickUpFieldUpdating(task.id, 'priority', true)
+      try {
+        const result = await updateClickUpTask(
+          task.id,
+          { priority: priority?.value ?? null },
+          selectedClickUpWorkspaceId,
+          { sourceContext: clickUpTaskSourceContext }
+        )
+        if (!result.ok) {
+          toast.error(result.error)
+          return
+        }
+        const nextPriority = priority
+          ? {
+              id: String(priority.value),
+              priority: getClickUpPriorityLabel(priority),
+              color: priority.color,
+              orderindex: String(priority.value)
+            }
+          : undefined
+        patchClickUpTask(
+          task.id,
+          { priority: nextPriority },
+          { sourceContext: clickUpTaskSourceContext }
+        )
+        setClickUpTasks((current) =>
+          current.map((currentTask) =>
+            currentTask.id === task.id ? { ...currentTask, priority: nextPriority } : currentTask
+          )
+        )
+        if (selectedClickUpTaskId === task.id) {
+          setSelectedClickUpTaskDetail((current) =>
+            current ? { ...current, priority: nextPriority } : current
+          )
+        }
+      } finally {
+        setClickUpFieldUpdating(task.id, 'priority', false)
+      }
+    },
+    [
+      clickUpTaskSourceContext,
+      patchClickUpTask,
+      selectedClickUpTaskId,
+      selectedClickUpWorkspaceId,
+      setClickUpTasks,
+      setClickUpFieldUpdating,
+      updateClickUpTask
+    ]
+  )
+
+  const patchClickUpTags = useCallback(
+    (taskId: string, tags: ClickUpTask['tags']): void => {
+      setClickUpTasks((current) =>
+        current.map((currentTask) =>
+          currentTask.id === taskId ? { ...currentTask, tags } : currentTask
+        )
+      )
+      patchClickUpTask(taskId, { tags }, { sourceContext: clickUpTaskSourceContext })
+      if (selectedClickUpTaskId === taskId) {
+        setSelectedClickUpTaskDetail((current) => (current ? { ...current, tags } : current))
+      }
+    },
+    [clickUpTaskSourceContext, patchClickUpTask, selectedClickUpTaskId, setClickUpTasks]
+  )
+
+  const patchClickUpAssignees = useCallback(
+    (taskId: string, assignees: ClickUpTask['assignees']): void => {
+      setClickUpTasks((current) =>
+        current.map((currentTask) =>
+          currentTask.id === taskId ? { ...currentTask, assignees } : currentTask
+        )
+      )
+      patchClickUpTask(taskId, { assignees }, { sourceContext: clickUpTaskSourceContext })
+      if (selectedClickUpTaskId === taskId) {
+        setSelectedClickUpTaskDetail((current) => (current ? { ...current, assignees } : current))
+      }
+    },
+    [clickUpTaskSourceContext, patchClickUpTask, selectedClickUpTaskId, setClickUpTasks]
+  )
+
+  const handleClickUpAssigneeToggle = useCallback(
+    async (task: ClickUpTask, member: ClickUpUser): Promise<void> => {
+      const memberId = Number(member.id)
+      if (!Number.isFinite(memberId)) {
+        toast.error(
+          translate(
+            'auto.components.TaskPage.clickupInvalidAssignee',
+            'ClickUp returned an invalid member ID.'
+          )
+        )
+        return
+      }
+      const previousAssignees = task.assignees
+      const { assignees: nextAssignees, removing } = toggleClickUpAssignee(
+        previousAssignees,
+        member
+      )
+
+      setClickUpFieldUpdating(task.id, 'assignees', true)
+      patchClickUpAssignees(task.id, nextAssignees)
+      try {
+        const result = await updateClickUpTask(
+          task.id,
+          removing ? { removeAssigneeIds: [memberId] } : { addAssigneeIds: [memberId] },
+          selectedClickUpWorkspaceId,
+          { sourceContext: clickUpTaskSourceContext }
+        )
+        if (!result.ok) {
+          throw new Error(result.error)
+        }
+      } catch (error) {
+        patchClickUpAssignees(task.id, previousAssignees)
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : translate(
+                'auto.components.TaskPage.clickupAssigneeUpdateFailed',
+                'Failed to update assignees.'
+              )
+        )
+      } finally {
+        setClickUpFieldUpdating(task.id, 'assignees', false)
+      }
+    },
+    [
+      clickUpTaskSourceContext,
+      patchClickUpAssignees,
+      selectedClickUpWorkspaceId,
+      setClickUpFieldUpdating,
+      updateClickUpTask
+    ]
+  )
+
+  const handleClickUpAddTag = useCallback(
+    async (task: ClickUpTask, tagName: string): Promise<void> => {
+      const name = tagName.trim()
+      if (
+        !name ||
+        task.tags.some((tag) => getClickUpTagName(tag).toLowerCase() === name.toLowerCase())
+      ) {
+        return
+      }
+      setClickUpFieldUpdating(task.id, 'tags', true)
+      try {
+        const result = await addClickUpTaskTag(task.id, name, selectedClickUpWorkspaceId, {
+          sourceContext: clickUpTaskSourceContext
+        })
+        if (!result.ok) {
+          toast.error(result.error)
+          return
+        }
+        const availableTag = clickUpTagOptions.find(
+          (tag) => getClickUpTagName(tag).toLowerCase() === name.toLowerCase()
+        )
+        patchClickUpTags(task.id, [...task.tags, availableTag ?? { name }])
+      } finally {
+        setClickUpFieldUpdating(task.id, 'tags', false)
+      }
+    },
+    [
+      addClickUpTaskTag,
+      clickUpTaskSourceContext,
+      clickUpTagOptions,
+      patchClickUpTags,
+      selectedClickUpWorkspaceId,
+      setClickUpFieldUpdating
+    ]
+  )
+
+  const handleClickUpRemoveTag = useCallback(
+    async (task: ClickUpTask, tagName: string): Promise<void> => {
+      const name = tagName.trim()
+      if (!name) {
+        return
+      }
+      setClickUpFieldUpdating(task.id, 'tags', true)
+      try {
+        const result = await removeClickUpTaskTag(task.id, name, selectedClickUpWorkspaceId, {
+          sourceContext: clickUpTaskSourceContext
+        })
+        if (!result.ok) {
+          toast.error(result.error)
+          return
+        }
+        patchClickUpTags(
+          task.id,
+          task.tags.filter((tag) => getClickUpTagName(tag).toLowerCase() !== name.toLowerCase())
+        )
+      } finally {
+        setClickUpFieldUpdating(task.id, 'tags', false)
+      }
+    },
+    [
+      clickUpTaskSourceContext,
+      patchClickUpTags,
+      removeClickUpTaskTag,
+      selectedClickUpWorkspaceId,
+      setClickUpFieldUpdating
+    ]
+  )
 
   // Why: for Linear issues the "Use" flow opens the composer with the issue
   // info adapted to the LinkedWorkItemSummary shape. Linear identifiers are
@@ -8319,6 +11303,137 @@ export default function TaskPage(): React.JSX.Element {
                             ))}
                           </SelectContent>
                         </Select>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {taskSource === 'clickup' && clickUpConnected ? (
+                    <div className="flex min-w-0 items-center gap-2">
+                      {clickUpWorkspaces.length > 1 ? (
+                        <Select
+                          value={selectedClickUpWorkspaceId ?? undefined}
+                          onValueChange={(value) => {
+                            setClickUpSpaces([])
+                            setClickUpListOptions([])
+                            setSelectedClickUpSpaceId(null)
+                            setSelectedClickUpListId(null)
+                            clearClickUpSavedView()
+                            setSelectedClickUpTaskId(null)
+                            setClickUpError(null)
+                            pendingClickUpScopeRef.current = null
+                            setTaskResumeState({
+                              clickUpWorkspaceId: value,
+                              clickUpSpaceId: undefined,
+                              clickUpListId: undefined,
+                              clickUpViewId: undefined
+                            })
+                            void selectClickUpWorkspace(value).catch(() => {
+                              toast.error(
+                                translate(
+                                  'auto.components.TaskPage.clickupWorkspaceSwitchFailed',
+                                  'Failed to switch ClickUp workspace.'
+                                )
+                              )
+                            })
+                          }}
+                        >
+                          <SelectTrigger className="h-8 w-[220px] rounded-md border-border/50 bg-muted/50 text-xs font-medium shadow-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent
+                            position="popper"
+                            side="bottom"
+                            align="start"
+                            sideOffset={4}
+                          >
+                            {clickUpWorkspaces.map((workspace) => (
+                              <SelectItem key={workspace.id} value={workspace.id}>
+                                {workspace.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : null}
+                      {clickUpSpaces.length > 0 ? (
+                        <Select
+                          value={selectedClickUpSpaceId ?? undefined}
+                          onValueChange={(value) => {
+                            setSelectedClickUpSpaceId(value)
+                            setClickUpListOptions([])
+                            setSelectedClickUpListId(null)
+                            clearClickUpSavedView()
+                            setSelectedClickUpTaskId(null)
+                            pendingClickUpScopeRef.current = null
+                            setTaskResumeState({
+                              clickUpWorkspaceId: selectedClickUpWorkspaceId ?? undefined,
+                              clickUpSpaceId: value,
+                              clickUpListId: undefined,
+                              clickUpViewId: undefined
+                            })
+                          }}
+                        >
+                          <SelectTrigger className="h-8 w-[190px] rounded-md border-border/50 bg-muted/50 text-xs font-medium shadow-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent
+                            position="popper"
+                            side="bottom"
+                            align="start"
+                            sideOffset={4}
+                          >
+                            {clickUpSpaces.map((space) => (
+                              <SelectItem key={space.id} value={space.id}>
+                                {space.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : null}
+                      {clickUpListOptions.length > 0 ? (
+                        <Select
+                          value={selectedClickUpListId ?? undefined}
+                          onValueChange={(value) => {
+                            setSelectedClickUpListId(value)
+                            clearClickUpSavedView()
+                            setSelectedClickUpTaskId(null)
+                            pendingClickUpScopeRef.current = null
+                            setTaskResumeState({
+                              clickUpWorkspaceId: selectedClickUpWorkspaceId ?? undefined,
+                              clickUpSpaceId: selectedClickUpSpaceId ?? undefined,
+                              clickUpListId: value,
+                              clickUpViewId: undefined
+                            })
+                          }}
+                        >
+                          <SelectTrigger className="h-8 w-[260px] rounded-md border-border/50 bg-muted/50 text-xs font-medium shadow-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent
+                            position="popper"
+                            side="bottom"
+                            align="start"
+                            sideOffset={4}
+                          >
+                            {clickUpListOptions.map((option) => (
+                              <SelectItem key={option.list.id} value={option.list.id}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : null}
+                      {selectedClickUpListId ? (
+                        <ClickUpSavedViewSelect
+                          data={clickUpListViewsState.data}
+                          loading={clickUpListViewsState.loading}
+                          error={clickUpListViewsState.error}
+                          value={selectedClickUpViewId}
+                          onChange={(viewId) => {
+                            restoreClickUpAllTasksLayout()
+                            setSelectedClickUpViewId(viewId)
+                            setSelectedClickUpTaskId(null)
+                            setTaskResumeState({ clickUpViewId: viewId ?? undefined })
+                          }}
+                        />
                       ) : null}
                     </div>
                   ) : null}
@@ -9075,6 +12190,194 @@ export default function TaskPage(): React.JSX.Element {
                           </button>
                         ) : null}
                       </div>
+                    </div>
+                  </div>
+                ) : taskSource === 'clickup' && clickUpConnected && !selectedClickUpTaskId ? (
+                  <div className="rounded-md rounded-b-none border border-border/50 bg-muted/50 px-3 pt-2 pb-0 shadow-sm">
+                    <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+                      <div className="relative min-w-0 flex-1 basis-64">
+                        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                          value={clickUpSearchInput}
+                          onChange={(e) => setClickUpSearchInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              if (
+                                shouldSuppressEnterSubmit(
+                                  { isComposing: e.nativeEvent.isComposing, shiftKey: e.shiftKey },
+                                  false
+                                )
+                              ) {
+                                return
+                              }
+                              e.preventDefault()
+                              const trimmed = clickUpSearchInput.trim()
+                              setClickUpSearchInput(trimmed)
+                              setAppliedClickUpSearch(trimmed)
+                            }
+                          }}
+                          placeholder={translate(
+                            'auto.components.TaskPage.clickupSearchPlaceholder',
+                            'Search ClickUp tasks...'
+                          )}
+                          className="h-8 rounded-md border-border/50 bg-background pl-8 pr-8 text-xs"
+                        />
+                        {clickUpSearchInput ? (
+                          <button
+                            type="button"
+                            aria-label={translate(
+                              'auto.components.TaskPage.b797bdd7c3',
+                              'Clear search'
+                            )}
+                            onClick={() => {
+                              setClickUpSearchInput('')
+                              setAppliedClickUpSearch('')
+                            }}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground transition hover:text-foreground"
+                          >
+                            <X className="size-4" />
+                          </button>
+                        ) : null}
+                      </div>
+                      <ClickUpListLayoutControls
+                        grouping={clickUpGrouping}
+                        groupDirection={clickUpGroupDirection}
+                        subtaskMode={clickUpSubtaskMode}
+                        groupingEnabled
+                        onGroupingChange={setClickUpGrouping}
+                        onGroupDirectionChange={setClickUpGroupDirection}
+                        onSubtaskModeChange={selectClickUpSubtaskMode}
+                      />
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className={cn(
+                              'h-8 gap-1.5 border-border/50 bg-transparent px-2 text-xs hover:bg-muted/50 backdrop-blur-md supports-[backdrop-filter]:bg-transparent',
+                              clickUpViewSettingsModified &&
+                                'border-primary/45 bg-primary/10 text-primary hover:border-primary/55 hover:bg-primary/15 dark:border-primary/45 dark:bg-primary/10 dark:hover:bg-primary/15 supports-[backdrop-filter]:bg-primary/10 supports-[backdrop-filter]:hover:bg-primary/15'
+                            )}
+                          >
+                            <Columns3 className="size-3.5" />
+                            {translate('auto.components.TaskPage.clickupColumns', 'Columns')}
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-56">
+                          {!selectedClickUpViewId ? (
+                            <>
+                              <DropdownMenuCheckboxItem
+                                checked={clickUpShowClosedTasks}
+                                onSelect={(event) => event.preventDefault()}
+                                onCheckedChange={(checked) =>
+                                  setClickUpShowClosedTasks(checked === true)
+                                }
+                              >
+                                {translate(
+                                  'auto.components.TaskPage.clickupShowClosedTasks',
+                                  'Show closed tasks'
+                                )}
+                              </DropdownMenuCheckboxItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuLabel className="flex items-center gap-2">
+                                <ArrowDownUp className="size-3.5" />
+                                {translate('auto.components.TaskPage.5d2d835467', 'Ordering')}
+                              </DropdownMenuLabel>
+                              <DropdownMenuRadioGroup
+                                value={clickUpOrdering}
+                                onValueChange={(value) =>
+                                  setClickUpOrdering(value as ClickUpOrdering)
+                                }
+                              >
+                                {clickUpOrderingOptions.map((option) => (
+                                  <DropdownMenuRadioItem key={option.id} value={option.id}>
+                                    {option.label}
+                                  </DropdownMenuRadioItem>
+                                ))}
+                              </DropdownMenuRadioGroup>
+                              <DropdownMenuSeparator />
+                            </>
+                          ) : null}
+                          <DropdownMenuLabel className="flex items-center gap-2">
+                            <Eye className="size-3.5" />
+                            {translate('auto.components.TaskPage.a26a48252e', 'Display properties')}
+                          </DropdownMenuLabel>
+                          {clickUpDisplayPropertyOptions.map((property) => (
+                            <DropdownMenuCheckboxItem
+                              key={property.id}
+                              checked={clickUpDisplayProperties.has(property.id)}
+                              onSelect={(event) => event.preventDefault()}
+                              onCheckedChange={() => toggleClickUpDisplayProperty(property.id)}
+                            >
+                              {property.label}
+                            </DropdownMenuCheckboxItem>
+                          ))}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            onClick={openNewClickUpTaskDialog}
+                            disabled={
+                              clickUpListOptions.length === 0 ||
+                              clickUpHierarchyLoading ||
+                              newClickUpTaskSubmitting
+                            }
+                            aria-label={translate(
+                              'auto.components.TaskPage.clickupNewTask',
+                              'New ClickUp task'
+                            )}
+                            className="size-8 border-border/50 bg-transparent hover:bg-muted/50 backdrop-blur-md supports-[backdrop-filter]:bg-transparent"
+                          >
+                            {clickUpHierarchyLoading ? (
+                              <LoaderCircle className="size-4 animate-spin" />
+                            ) : (
+                              <Plus className="size-4" />
+                            )}
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom" sideOffset={6}>
+                          {translate('auto.components.TaskPage.clickupNewTask', 'New ClickUp task')}
+                        </TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            onClick={(event) => {
+                              if (isClickUpColdRefreshGesture(event, navigator.userAgent)) {
+                                resetClickUpTaskGraph(clickUpTaskGraphKey)
+                                setExpandedClickUpTaskIds(new Set())
+                                setClickUpInlineCreatedTaskIds([])
+                                setClickUpInlineSubtaskDraft(null)
+                                setClickUpError(null)
+                              }
+                              setClickUpRefreshNonce((n) => n + 1)
+                            }}
+                            disabled={clickUpHierarchyLoading}
+                            aria-label={translate(
+                              'auto.components.TaskPage.clickupRefresh',
+                              'Refresh ClickUp tasks'
+                            )}
+                            className="size-8 border-border/50 bg-transparent hover:bg-muted/50 backdrop-blur-md supports-[backdrop-filter]:bg-transparent"
+                          >
+                            {clickUpLoading || clickUpHierarchyLoading ? (
+                              <LoaderCircle className="size-4 animate-spin" />
+                            ) : (
+                              <RefreshCw className="size-4" />
+                            )}
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom" sideOffset={6}>
+                          {translate(
+                            'auto.components.TaskPage.clickupRefresh',
+                            'Refresh ClickUp tasks'
+                          )}
+                        </TooltipContent>
+                      </Tooltip>
                     </div>
                   </div>
                 ) : taskSource === 'gitlab' ? (
@@ -10028,7 +13331,10 @@ export default function TaskPage(): React.JSX.Element {
                               aria-label={translate(
                                 'auto.components.TaskPage.5e8061b088',
                                 'Start workspace from {{value0}} {{value1}}',
-                                { value0: item.type === 'mr' ? 'MR' : 'issue', value1: item.number }
+                                {
+                                  value0: item.type === 'mr' ? 'MR' : 'issue',
+                                  value1: item.number
+                                }
                               )}
                             >
                               <ArrowRight className="size-3.5" />
@@ -10170,6 +13476,877 @@ export default function TaskPage(): React.JSX.Element {
                   onClose={closeTaskDetailPage}
                   sourceContext={jiraDetailSourceContext}
                 />
+              </div>
+            )
+          ) : taskSource === 'clickup' && clickUpConnected && activeClickUpTask ? (
+            <ClickUpTaskWorkspace
+              task={activeClickUpTask}
+              variant="page"
+              backLabel={translate('auto.components.TaskPage.clickupListBack', 'ClickUp list')}
+              loading={clickUpTaskDetailLoading}
+              error={clickUpTaskDetailError}
+              onUse={handleUseClickUpTask}
+              onClose={closeClickUpDetailPage}
+              workspaceId={selectedClickUpWorkspaceId}
+              sourceContext={clickUpTaskSourceContext}
+              activityRefreshNonce={clickUpActivityRefreshNonce + clickUpRefreshNonce}
+              propertySection={
+                <div className="grid w-full gap-x-8 gap-y-3 sm:grid-cols-2">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="flex w-24 shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                      <Files className="size-3.5" />
+                      {translate('auto.components.TaskPage.clickupTaskType', 'Type')}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <ClickUpTaskTypeChip
+                        task={activeClickUpTask}
+                        taskTypes={clickUpTaskTypeOptions}
+                        onTypeChange={handleClickUpTypeChange}
+                        fillTrigger
+                        truncateLabel={false}
+                        updating={updatingClickUpFields.has(`type:${activeClickUpTask.id}`)}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="flex w-24 shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                      <CircleDot className="size-3.5" />
+                      {translate('auto.components.TaskPage.154b0fa623', 'Status')}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <ClickUpStatusChip
+                        task={activeClickUpTask}
+                        statuses={clickUpStatusOptions}
+                        onStatusChange={handleClickUpStatusChange}
+                        fillTrigger
+                        truncateLabel={false}
+                        updating={updatingClickUpFields.has(`status:${activeClickUpTask.id}`)}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="flex w-24 shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                      <Flag className="size-3.5" />
+                      {translate('auto.components.TaskPage.c8d5bec5f7', 'Priority')}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <ClickUpPriorityChip
+                        task={activeClickUpTask}
+                        onPriorityChange={handleClickUpPriorityChange}
+                        fillTrigger
+                        updating={updatingClickUpFields.has(`priority:${activeClickUpTask.id}`)}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="flex w-24 shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                      <Users className="size-3.5" />
+                      {translate('auto.components.TaskPage.clickupAssignees', 'Assignees')}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <ClickUpAssigneeEditor
+                        task={activeClickUpTask}
+                        members={clickUpAssignableMembers}
+                        loading={clickUpAssignableMembersLoading}
+                        error={clickUpAssignableMembersError}
+                        updating={updatingClickUpFields.has(`assignees:${activeClickUpTask.id}`)}
+                        onToggle={handleClickUpAssigneeToggle}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex min-w-0 items-start gap-3 sm:col-span-2">
+                    <span className="flex w-24 shrink-0 items-center gap-2 pt-1 text-xs text-muted-foreground">
+                      <Tag className="size-3.5" />
+                      {translate('auto.components.TaskPage.clickupTags', 'Tags')}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <ClickUpTagsEditor
+                        task={activeClickUpTask}
+                        availableTags={clickUpTagOptions}
+                        fillTrigger
+                        truncateLabels={false}
+                        updating={updatingClickUpFields.has(`tags:${activeClickUpTask.id}`)}
+                        onAddTag={handleClickUpAddTag}
+                        onRemoveTag={handleClickUpRemoveTag}
+                      />
+                    </div>
+                  </div>
+                </div>
+              }
+            />
+          ) : taskSource === 'clickup' ? (
+            !clickUpStatusReady ? (
+              <div className="mt-4 flex items-center justify-center py-14">
+                <LoaderCircle className="size-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : !clickUpConnected ? (
+              <div className="mt-4 flex flex-col items-center justify-center rounded-md border border-border/50 bg-muted/50 px-6 py-14 text-center shadow-sm">
+                <ClickUpIcon className="mb-4 size-8 text-muted-foreground/60" />
+                <p className="text-base font-medium text-foreground">
+                  {translate(
+                    'auto.components.TaskPage.clickupConnectTitle',
+                    'Connect your ClickUp workspace'
+                  )}
+                </p>
+                <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+                  {translate(
+                    'auto.components.TaskPage.clickupConnectBody',
+                    'Browse ClickUp tasks by workspace, space, folder, and list.'
+                  )}
+                </p>
+                <Button
+                  variant="outline"
+                  className="mt-5"
+                  onClick={() => hideTaskSource('clickup', 'ClickUp')}
+                >
+                  {translate('auto.components.TaskPage.clickupHide', 'Hide ClickUp')}
+                </Button>
+              </div>
+            ) : (
+              <div className="flex min-h-0 max-h-full flex-col overflow-hidden rounded-md rounded-t-none border border-t-0 border-border/50 bg-background shadow-sm">
+                <div className="flex min-h-0 flex-col overflow-hidden">
+                  <div className="flex h-10 flex-none items-center justify-between gap-3 border-b border-border/50 bg-muted/35 px-3">
+                    <div className="min-w-0 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                      {translate('auto.components.TaskPage.clickupTasks', 'ClickUp tasks')}
+                    </div>
+                    <div className="shrink-0 text-[11px] text-muted-foreground">
+                      {displayedClickUpTasks.length}{' '}
+                      {translate('auto.components.TaskPage.b7bae28b6a', 'shown')}
+                    </div>
+                  </div>
+                  <div className="relative min-h-0 flex-1 overflow-hidden">
+                    <ClickUpColumnResizeRails
+                      columns={visibleClickUpResizeColumns}
+                      gridTemplateColumns={clickUpGridTemplateColumns}
+                      labels={clickUpResizeLabels}
+                      activeColumn={activeClickUpResizeColumn}
+                      onActiveColumnChange={setActiveClickUpResizeColumn}
+                      onResizeStart={startClickUpColumnResize}
+                    />
+                    <div
+                      className="grid h-8 flex-none items-center gap-3 border-b border-border/50 bg-muted/25 px-3 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground max-md:!hidden"
+                      style={{ gridTemplateColumns: clickUpGridTemplateColumns }}
+                    >
+                      <span className="truncate">
+                        {translate('auto.components.TaskPage.b1eaa18ace', 'Issue')}
+                      </span>
+                      {visibleClickUpResizeColumns.map((column) => (
+                        <ClickUpResizableHeaderCell
+                          key={column}
+                          column={column}
+                          label={clickUpColumnLabels[column]}
+                          resizeLabel={clickUpResizeLabels[column]}
+                          active={activeClickUpResizeColumn === column}
+                          onActiveColumnChange={setActiveClickUpResizeColumn}
+                          onResizeStart={startClickUpColumnResize}
+                        />
+                      ))}
+                      <span />
+                    </div>
+                    <div
+                      ref={clickUpTaskScrollRef}
+                      className="min-h-0 h-[calc(100%-2rem)] overflow-y-auto scrollbar-sleek"
+                    >
+                      {clickUpStatus.credentialError ? (
+                        <div className="border-b border-border px-4 py-4 text-sm text-destructive">
+                          {clickUpStatus.credentialError}
+                        </div>
+                      ) : null}
+                      {!clickUpStatus.credentialError && clickUpError ? (
+                        <div className="border-b border-border px-4 py-4 text-sm text-destructive">
+                          {clickUpError}
+                        </div>
+                      ) : null}
+                      {(clickUpLoading || clickUpHierarchyLoading) &&
+                      displayedClickUpTasks.length === 0 ? (
+                        <div className="flex items-center justify-center gap-2 px-4 py-12 text-sm text-muted-foreground">
+                          <LoaderCircle className="size-4 animate-spin" />
+                          {translate(
+                            'auto.components.TaskPage.clickupLoading',
+                            'Loading ClickUp tasks...'
+                          )}
+                        </div>
+                      ) : null}
+                      {!clickUpLoading &&
+                      !clickUpHierarchyLoading &&
+                      !clickUpError &&
+                      clickUpListOptions.length === 0 ? (
+                        <div className="px-4 py-12 text-center text-sm text-muted-foreground">
+                          {translate(
+                            'auto.components.TaskPage.clickupNoLists',
+                            'No ClickUp lists were found for this space.'
+                          )}
+                        </div>
+                      ) : null}
+                      {!clickUpLoading &&
+                      !clickUpHierarchyLoading &&
+                      !clickUpError &&
+                      clickUpListOptions.length > 0 &&
+                      displayedClickUpTasks.length === 0 ? (
+                        <div className="px-4 py-12 text-center text-sm text-muted-foreground">
+                          {translate(
+                            'auto.components.TaskPage.clickupNoTasks',
+                            'No ClickUp tasks match this list and search.'
+                          )}
+                        </div>
+                      ) : null}
+                      {clickUpTaskRows.length > 0 ? (
+                        <div
+                          className="relative w-full"
+                          style={{ height: clickUpVirtualizer.getTotalSize() }}
+                        >
+                          {clickUpVirtualRows.map((virtualRow) => {
+                            const row: ClickUpTaskTreeRow | undefined =
+                              clickUpTaskRows[virtualRow.index]
+                            if (!row) {
+                              return (
+                                <div
+                                  key={virtualRow.key}
+                                  data-index={virtualRow.index}
+                                  ref={clickUpVirtualizer.measureElement}
+                                  className="absolute left-0 top-0 flex w-full items-center justify-center gap-2 border-b border-border/40 px-4 py-3 text-xs text-muted-foreground"
+                                  style={{ transform: `translateY(${virtualRow.start}px)` }}
+                                >
+                                  <LoaderCircle className="size-3.5 animate-spin" />
+                                  {translate(
+                                    'auto.components.TaskPage.clickupLoadingMore',
+                                    'Loading ClickUp tasks...'
+                                  )}
+                                </div>
+                              )
+                            }
+                            if (row.group) {
+                              const group = row.group
+                              return (
+                                <div
+                                  key={virtualRow.key}
+                                  ref={clickUpVirtualizer.measureElement}
+                                  data-index={virtualRow.index}
+                                  className="absolute left-0 top-0 flex w-full items-center gap-2 border-b border-border/50 bg-muted/20 px-3 py-2.5"
+                                  style={{ transform: `translateY(${virtualRow.start}px)` }}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setCollapsedClickUpGroupIds((current) => {
+                                        const next = new Set(current)
+                                        if (next.has(group.id)) {
+                                          next.delete(group.id)
+                                        } else {
+                                          next.add(group.id)
+                                        }
+                                        return next
+                                      })
+                                    }
+                                    className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                                    aria-label={
+                                      row.expanded
+                                        ? translate(
+                                            'auto.components.TaskPage.clickupCollapseGroup',
+                                            'Collapse {{value0}} group',
+                                            { value0: group.label }
+                                          )
+                                        : translate(
+                                            'auto.components.TaskPage.clickupExpandGroup',
+                                            'Expand {{value0}} group',
+                                            { value0: group.label }
+                                          )
+                                    }
+                                  >
+                                    {row.expanded ? (
+                                      <ChevronDown className="size-3.5" />
+                                    ) : (
+                                      <ChevronRight className="size-3.5" />
+                                    )}
+                                  </button>
+                                  <span
+                                    className="inline-flex min-w-0 items-center gap-1.5 rounded border border-border/50 bg-muted/45 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.04em] text-foreground"
+                                    style={
+                                      group.color ? getClickUpChipStyle(group.color) : undefined
+                                    }
+                                    title={group.label}
+                                  >
+                                    <span
+                                      className="size-2 shrink-0 rounded-full bg-muted-foreground"
+                                      style={
+                                        group.color ? { backgroundColor: group.color } : undefined
+                                      }
+                                    />
+                                    <span className="truncate">{group.label}</span>
+                                  </span>
+                                  <span className="text-xs tabular-nums text-muted-foreground">
+                                    {group.count}
+                                  </span>
+                                </div>
+                              )
+                            }
+                            if (!row.task) {
+                              if (
+                                row.composerParentId &&
+                                clickUpInlineSubtaskDraft?.parentTaskId === row.composerParentId
+                              ) {
+                                const draft = clickUpInlineSubtaskDraft
+                                const draftStatus = clickUpStatusOptions.find(
+                                  (status) => status.status === draft.status
+                                )
+                                const draftPriority = CLICKUP_PRIORITY_OPTIONS.find(
+                                  (priority) => String(priority.value) === draft.priority
+                                )
+                                const draftType = clickUpTaskTypeOptions.find(
+                                  (taskType) => String(taskType.id) === draft.taskTypeId
+                                )
+                                const draftTask: ClickUpTask = {
+                                  id: `clickup-draft:${draft.parentTaskId}`,
+                                  listId: selectedClickUpListId ?? '',
+                                  parentId: draft.parentTaskId,
+                                  title: draft.title,
+                                  url: '',
+                                  customItemId: draftType?.id ?? 0,
+                                  customItemName: draftType?.name,
+                                  status: draftStatus,
+                                  priority: draftPriority
+                                    ? {
+                                        id: String(draftPriority.value),
+                                        priority: getClickUpPriorityLabel(draftPriority),
+                                        color: draftPriority.color,
+                                        orderindex: String(draftPriority.value)
+                                      }
+                                    : undefined,
+                                  tags: draft.tagNames.flatMap((name) => {
+                                    const tag = clickUpTagOptions.find(
+                                      (option) =>
+                                        getClickUpTagName(option).toLowerCase() ===
+                                        name.toLowerCase()
+                                    )
+                                    return tag ?? [{ name }]
+                                  }),
+                                  assignees: clickUpAssignableMembers.filter((member) =>
+                                    draft.assigneeIds.includes(member.id)
+                                  ),
+                                  createdAt: '',
+                                  updatedAt: ''
+                                }
+                                const updateDraft = (
+                                  update: Partial<ClickUpInlineSubtaskDraft>
+                                ): void => {
+                                  setClickUpInlineSubtaskDraft((current) =>
+                                    current?.parentTaskId === draft.parentTaskId
+                                      ? { ...current, ...update }
+                                      : current
+                                  )
+                                }
+                                return (
+                                  <div
+                                    key={virtualRow.key}
+                                    ref={clickUpVirtualizer.measureElement}
+                                    data-index={virtualRow.index}
+                                    className="absolute left-0 top-0 grid w-full grid-cols-[var(--clickup-grid-template)] items-center gap-3 border-b border-border/40 bg-muted/20 px-3 py-2 text-sm max-md:grid-cols-[minmax(0,1fr)_56px]"
+                                    style={
+                                      {
+                                        '--clickup-grid-template': clickUpGridTemplateColumns,
+                                        transform: `translateY(${virtualRow.start}px)`
+                                      } as React.CSSProperties
+                                    }
+                                  >
+                                    <div
+                                      className="flex min-w-0 items-center gap-2"
+                                      style={{
+                                        paddingLeft:
+                                          row.depth * 14 +
+                                          20 +
+                                          (clickUpGrouping === 'none'
+                                            ? 0
+                                            : CLICKUP_GROUPED_ROW_INSET)
+                                      }}
+                                    >
+                                      <Input
+                                        autoFocus
+                                        value={draft.title}
+                                        disabled={clickUpInlineSubtaskSubmitting}
+                                        onChange={(event) =>
+                                          updateDraft({ title: event.target.value })
+                                        }
+                                        onKeyDown={(event) => {
+                                          if (event.key === 'Escape') {
+                                            event.preventDefault()
+                                            setClickUpInlineSubtaskDraft(null)
+                                          } else if (
+                                            event.key === 'Enter' &&
+                                            !event.nativeEvent.isComposing
+                                          ) {
+                                            event.preventDefault()
+                                            void handleCreateClickUpSubtask()
+                                          }
+                                        }}
+                                        placeholder={translate(
+                                          'auto.components.TaskPage.clickupAddSubtask',
+                                          'Add subtask'
+                                        )}
+                                        aria-label={translate(
+                                          'auto.components.TaskPage.clickupAddSubtask',
+                                          'Add subtask'
+                                        )}
+                                        className="h-7 min-w-0 border-transparent bg-transparent px-1.5 shadow-none focus-visible:bg-background"
+                                      />
+                                    </div>
+                                    {clickUpDisplayProperties.has('type') ? (
+                                      <div className="min-w-0 max-md:hidden">
+                                        <ClickUpTaskTypeChip
+                                          task={draftTask}
+                                          taskTypes={clickUpTaskTypeOptions}
+                                          fillTrigger
+                                          onTypeChange={(_task, taskType) =>
+                                            updateDraft({ taskTypeId: String(taskType.id) })
+                                          }
+                                        />
+                                      </div>
+                                    ) : null}
+                                    {clickUpDisplayProperties.has('status') ? (
+                                      <div className="min-w-0 max-md:hidden">
+                                        <ClickUpStatusChip
+                                          task={draftTask}
+                                          statuses={clickUpStatusOptions}
+                                          fillTrigger
+                                          onStatusChange={(_task, status) =>
+                                            updateDraft({ status: status.status })
+                                          }
+                                        />
+                                      </div>
+                                    ) : null}
+                                    {clickUpDisplayProperties.has('priority') ? (
+                                      <div className="min-w-0 max-md:hidden">
+                                        <ClickUpPriorityChip
+                                          task={draftTask}
+                                          fillTrigger
+                                          onPriorityChange={(_task, priority) =>
+                                            updateDraft({
+                                              priority: priority ? String(priority.value) : ''
+                                            })
+                                          }
+                                        />
+                                      </div>
+                                    ) : null}
+                                    {clickUpDisplayProperties.has('tags') ? (
+                                      <div className="min-w-0 max-md:hidden">
+                                        <ClickUpTagsEditor
+                                          task={draftTask}
+                                          availableTags={clickUpTagOptions}
+                                          fillTrigger
+                                          onAddTag={async (_task, name) =>
+                                            updateDraft({
+                                              tagNames: [...draft.tagNames, name]
+                                            })
+                                          }
+                                          onRemoveTag={async (_task, name) =>
+                                            updateDraft({
+                                              tagNames: draft.tagNames.filter(
+                                                (tagName) =>
+                                                  tagName.toLowerCase() !== name.toLowerCase()
+                                              )
+                                            })
+                                          }
+                                        />
+                                      </div>
+                                    ) : null}
+                                    {clickUpDisplayProperties.has('assignees') ? (
+                                      <div className="min-w-0 max-md:hidden">
+                                        <ClickUpAssigneeEditor
+                                          task={draftTask}
+                                          members={clickUpAssignableMembers}
+                                          loading={clickUpAssignableMembersLoading}
+                                          error={clickUpAssignableMembersError}
+                                          onToggle={(_task, member) =>
+                                            updateDraft({
+                                              assigneeIds: draft.assigneeIds.includes(member.id)
+                                                ? draft.assigneeIds.filter((id) => id !== member.id)
+                                                : [...draft.assigneeIds, member.id]
+                                            })
+                                          }
+                                        />
+                                      </div>
+                                    ) : null}
+                                    {clickUpDisplayProperties.has('updated') ? (
+                                      <span className="max-md:hidden" />
+                                    ) : null}
+                                    <div className="flex justify-end gap-1">
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon-xs"
+                                        disabled={clickUpInlineSubtaskSubmitting}
+                                        onClick={() => setClickUpInlineSubtaskDraft(null)}
+                                        aria-label={translate(
+                                          'auto.components.TaskPage.ff69a30681',
+                                          'Cancel'
+                                        )}
+                                      >
+                                        <X />
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        size="icon-xs"
+                                        disabled={
+                                          !draft.title.trim() || clickUpInlineSubtaskSubmitting
+                                        }
+                                        onClick={() => void handleCreateClickUpSubtask()}
+                                        aria-label={translate(
+                                          'auto.components.TaskPage.clickupSaveSubtask',
+                                          'Save subtask'
+                                        )}
+                                      >
+                                        {clickUpInlineSubtaskSubmitting ? (
+                                          <LoaderCircle className="animate-spin" />
+                                        ) : (
+                                          <Check />
+                                        )}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                )
+                              }
+                              return (
+                                <div
+                                  key={virtualRow.key}
+                                  ref={clickUpVirtualizer.measureElement}
+                                  data-index={virtualRow.index}
+                                  role="status"
+                                  className="absolute left-0 top-0 flex w-full items-center border-b border-border/40 px-3 py-2 text-muted-foreground"
+                                  style={{ transform: `translateY(${virtualRow.start}px)` }}
+                                >
+                                  <span
+                                    className="inline-flex size-5 items-center justify-center"
+                                    style={{ marginLeft: row.depth * 14 }}
+                                  >
+                                    <LoaderCircle className="size-3.5 animate-spin" />
+                                  </span>
+                                  <span className="sr-only">
+                                    {translate(
+                                      'auto.components.TaskPage.clickupLoadingMore',
+                                      'Loading ClickUp tasks...'
+                                    )}
+                                  </span>
+                                </div>
+                              )
+                            }
+                            const { task, depth, hasChildren, expanded } = row
+                            const selected = task.id === selectedClickUpTaskId
+                            const identifier = getClickUpTaskDisplayId(task)
+                            const idCopied = copiedClickUpTaskId === identifier
+                            const statusUpdating = updatingClickUpFields.has(`status:${task.id}`)
+                            const typeUpdating = updatingClickUpFields.has(`type:${task.id}`)
+                            const priorityUpdating = updatingClickUpFields.has(
+                              `priority:${task.id}`
+                            )
+                            const tagsUpdating = updatingClickUpFields.has(`tags:${task.id}`)
+                            const assigneesUpdating = updatingClickUpFields.has(
+                              `assignees:${task.id}`
+                            )
+                            const subtasksFailed = failedClickUpSubtaskParentIds.has(task.id)
+                            const subtasksLoading = isClickUpTaskChildMetadataPending(
+                              task,
+                              loadingClickUpSubtaskParentIds.has(task.id),
+                              hasChildren
+                            )
+                            const canExpandTask = canExpandClickUpTask(
+                              task,
+                              hasChildren,
+                              !selectedClickUpViewId
+                            )
+                            return (
+                              <div
+                                key={virtualRow.key}
+                                ref={clickUpVirtualizer.measureElement}
+                                data-index={virtualRow.index}
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => {
+                                  setSelectedClickUpTaskDetail(null)
+                                  setClickUpTaskDetailError(null)
+                                  setSelectedClickUpTaskId(task.id)
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault()
+                                    setSelectedClickUpTaskDetail(null)
+                                    setClickUpTaskDetailError(null)
+                                    setSelectedClickUpTaskId(task.id)
+                                  }
+                                }}
+                                className={cn(
+                                  'group/clickup-task-row absolute left-0 top-0 grid w-full cursor-pointer grid-cols-[var(--clickup-grid-template)] items-center gap-3 border-b border-border/40 px-3 py-2 text-sm transition hover:bg-muted/30 max-md:grid-cols-[minmax(0,1fr)_56px]',
+                                  selected && 'bg-muted/50'
+                                )}
+                                style={
+                                  {
+                                    '--clickup-grid-template': clickUpGridTemplateColumns,
+                                    transform: `translateY(${virtualRow.start}px)`
+                                  } as React.CSSProperties
+                                }
+                              >
+                                <div
+                                  className="min-w-0"
+                                  style={{
+                                    paddingLeft:
+                                      clickUpGrouping === 'none' ? 0 : CLICKUP_GROUPED_ROW_INSET
+                                  }}
+                                >
+                                  <div className="flex min-w-0 items-center gap-2">
+                                    {clickUpViewMode === 'tree' ? (
+                                      canExpandTask ? (
+                                        <button
+                                          type="button"
+                                          onClick={(event) => {
+                                            event.stopPropagation()
+                                            toggleClickUpTaskExpansion(task)
+                                          }}
+                                          aria-label={
+                                            expanded
+                                              ? translate(
+                                                  'auto.components.TaskPage.clickupCollapseTask',
+                                                  'Collapse {{value0}}',
+                                                  { value0: task.title }
+                                                )
+                                              : translate(
+                                                  'auto.components.TaskPage.clickupExpandTask',
+                                                  'Expand {{value0}}',
+                                                  { value0: task.title }
+                                                )
+                                          }
+                                          className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                                          style={{ marginLeft: depth * 14 }}
+                                        >
+                                          {subtasksLoading ? (
+                                            <LoaderCircle className="size-3.5 animate-spin" />
+                                          ) : expanded ? (
+                                            <ChevronDown className="size-3.5" />
+                                          ) : (
+                                            <ChevronRight className="size-3.5" />
+                                          )}
+                                        </button>
+                                      ) : subtasksLoading ? (
+                                        <button
+                                          type="button"
+                                          onClick={(event) => {
+                                            event.stopPropagation()
+                                            toggleClickUpTaskExpansion(task)
+                                          }}
+                                          onKeyDown={(event) => event.stopPropagation()}
+                                          className="inline-flex size-5 shrink-0 items-center justify-center text-muted-foreground"
+                                          style={{ marginLeft: depth * 14 }}
+                                          aria-label={translate(
+                                            'auto.components.TaskPage.clickupLoadSubtasks',
+                                            'Load subtasks for {{value0}}',
+                                            { value0: task.title }
+                                          )}
+                                        >
+                                          <LoaderCircle className="size-3.5 animate-spin" />
+                                        </button>
+                                      ) : subtasksFailed ? (
+                                        <Tooltip>
+                                          <TooltipTrigger asChild>
+                                            <button
+                                              type="button"
+                                              onClick={(event) => {
+                                                event.stopPropagation()
+                                                void loadClickUpTaskChildren(task)
+                                              }}
+                                              onKeyDown={(event) => event.stopPropagation()}
+                                              className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                                              style={{ marginLeft: depth * 14 }}
+                                              aria-label={translate(
+                                                'auto.components.TaskPage.clickupRetrySubtasks',
+                                                'Retry loading subtasks'
+                                              )}
+                                            >
+                                              <RefreshCw className="size-3.5" />
+                                            </button>
+                                          </TooltipTrigger>
+                                          <TooltipContent side="top" sideOffset={6}>
+                                            {translate(
+                                              'auto.components.TaskPage.clickupRetrySubtasks',
+                                              'Retry loading subtasks'
+                                            )}
+                                          </TooltipContent>
+                                        </Tooltip>
+                                      ) : (
+                                        <span
+                                          className="size-5 shrink-0"
+                                          style={{ marginLeft: depth * 14 }}
+                                          aria-hidden="true"
+                                        />
+                                      )
+                                    ) : null}
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation()
+                                        void copyClickUpTaskIdentifier(identifier)
+                                      }}
+                                      onKeyDown={(event) => {
+                                        event.stopPropagation()
+                                      }}
+                                      className={cn(
+                                        'inline-flex shrink-0 items-center gap-1 rounded border border-border/50 bg-muted/50 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                                        idCopied && 'border-primary/40 text-primary'
+                                      )}
+                                      aria-label={
+                                        idCopied
+                                          ? translate(
+                                              'auto.components.TaskPage.clickupTaskIdCopied',
+                                              'Copied {{value0}}',
+                                              { value0: identifier }
+                                            )
+                                          : translate(
+                                              'auto.components.TaskPage.clickupCopyTaskId',
+                                              'Copy {{value0}}',
+                                              { value0: identifier }
+                                            )
+                                      }
+                                      title={
+                                        idCopied
+                                          ? translate(
+                                              'auto.components.TaskPage.clickupTaskIdCopied',
+                                              'Copied {{value0}}',
+                                              { value0: identifier }
+                                            )
+                                          : translate(
+                                              'auto.components.TaskPage.clickupCopyTaskId',
+                                              'Copy {{value0}}',
+                                              { value0: identifier }
+                                            )
+                                      }
+                                    >
+                                      {idCopied ? <Check className="size-3" /> : null}
+                                      {identifier}
+                                    </button>
+                                    <span className="truncate font-medium text-foreground">
+                                      {task.title}
+                                    </span>
+                                    {task.subtaskCount ? (
+                                      <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+                                        <GitBranch className="size-3.5" />
+                                        {task.subtaskCount}
+                                      </span>
+                                    ) : null}
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <button
+                                          type="button"
+                                          onClick={(event) => {
+                                            event.stopPropagation()
+                                            openClickUpInlineSubtaskComposer(task)
+                                          }}
+                                          onKeyDown={(event) => event.stopPropagation()}
+                                          className="pointer-events-none inline-flex size-6 shrink-0 items-center justify-center rounded border border-border/50 bg-background text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/clickup-task-row:pointer-events-auto group-hover/clickup-task-row:opacity-100 group-focus-within/clickup-task-row:pointer-events-auto group-focus-within/clickup-task-row:opacity-100"
+                                          aria-label={translate(
+                                            'auto.components.TaskPage.clickupAddSubtaskTo',
+                                            'Add subtask to {{value0}}',
+                                            { value0: task.title }
+                                          )}
+                                        >
+                                          <Plus className="size-3.5" />
+                                        </button>
+                                      </TooltipTrigger>
+                                      <TooltipContent side="top" sideOffset={6}>
+                                        {translate(
+                                          'auto.components.TaskPage.clickupAddSubtask',
+                                          'Add subtask'
+                                        )}
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  </div>
+                                </div>
+                                {clickUpDisplayProperties.has('type') ? (
+                                  <div className="min-w-0 max-md:hidden">
+                                    <ClickUpTaskTypeChip
+                                      task={task}
+                                      taskTypes={clickUpTaskTypeOptions}
+                                      onTypeChange={handleClickUpTypeChange}
+                                      fillTrigger
+                                      updating={typeUpdating}
+                                    />
+                                  </div>
+                                ) : null}
+                                {clickUpDisplayProperties.has('status') ? (
+                                  <div className="min-w-0 max-md:hidden">
+                                    <ClickUpStatusChip
+                                      task={task}
+                                      statuses={clickUpStatusOptions}
+                                      onStatusChange={handleClickUpStatusChange}
+                                      fillTrigger
+                                      updating={statusUpdating}
+                                    />
+                                  </div>
+                                ) : null}
+                                {clickUpDisplayProperties.has('priority') ? (
+                                  <div className="min-w-0 max-md:hidden">
+                                    <ClickUpPriorityChip
+                                      task={task}
+                                      onPriorityChange={handleClickUpPriorityChange}
+                                      fillTrigger
+                                      updating={priorityUpdating}
+                                    />
+                                  </div>
+                                ) : null}
+                                {clickUpDisplayProperties.has('tags') ? (
+                                  <div className="min-w-0 max-md:hidden">
+                                    <ClickUpTagsEditor
+                                      task={task}
+                                      availableTags={clickUpTagOptions}
+                                      fillTrigger
+                                      updating={tagsUpdating}
+                                      onAddTag={handleClickUpAddTag}
+                                      onRemoveTag={handleClickUpRemoveTag}
+                                    />
+                                  </div>
+                                ) : null}
+                                {clickUpDisplayProperties.has('assignees') ? (
+                                  <div className="min-w-0 max-md:hidden">
+                                    <ClickUpAssigneeEditor
+                                      task={task}
+                                      members={clickUpAssignableMembers}
+                                      loading={clickUpAssignableMembersLoading}
+                                      error={clickUpAssignableMembersError}
+                                      updating={assigneesUpdating}
+                                      onToggle={handleClickUpAssigneeToggle}
+                                    />
+                                  </div>
+                                ) : null}
+                                {clickUpDisplayProperties.has('updated') ? (
+                                  <span className="text-xs text-muted-foreground max-md:hidden">
+                                    {task.updatedAt
+                                      ? new Date(task.updatedAt).toLocaleDateString()
+                                      : ''}
+                                  </span>
+                                ) : null}
+                                <div className="flex justify-end gap-1">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="xs"
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      handleUseClickUpTask(task)
+                                    }}
+                                    className="gap-1 bg-background/80 text-[11px]"
+                                    aria-label={translate(
+                                      'auto.components.TaskPage.clickupStartWorkspace',
+                                      'Start workspace from {{value0}}',
+                                      { value0: identifier }
+                                    )}
+                                  >
+                                    {translate('auto.components.TaskPage.7d08e8be0f', 'Start')}
+                                    <ArrowRight className="size-3" />
+                                  </Button>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
               </div>
             )
           ) : taskSource === 'linear' && selectedLinearIssue ? (
@@ -12658,6 +16835,54 @@ export default function TaskPage(): React.JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ClickUpCreateTaskDialog
+        open={newClickUpTaskOpen}
+        submitting={newClickUpTaskSubmitting}
+        listOptions={clickUpListOptions.map((option) => ({
+          value: option.list.id,
+          label: option.label
+        }))}
+        statusOptions={newClickUpTaskStatusOptions.map((status) => ({
+          value: status.status,
+          label: status.status.toUpperCase(),
+          color: getClickUpStatusColor(status)
+        }))}
+        priorityOptions={CLICKUP_PRIORITY_OPTIONS.map((priority) => ({
+          value: String(priority.value),
+          label: getClickUpPriorityLabel(priority),
+          color: priority.color
+        }))}
+        taskTypeOptions={clickUpTaskTypeOptions.map((taskType) => ({
+          value: String(taskType.id),
+          label: taskType.name,
+          color: getClickUpTaskTypeOptionColor(taskType)
+        }))}
+        tagOptions={clickUpTagOptions.map((tag) => ({
+          name: getClickUpTagName(tag),
+          color: getClickUpTagColor(tag)
+        }))}
+        listId={newClickUpTaskListId ?? selectedClickUpListId ?? ''}
+        title={newClickUpTaskTitle}
+        description={newClickUpTaskDescription}
+        status={newClickUpTaskStatus}
+        priority={newClickUpTaskPriority}
+        taskTypeId={newClickUpTaskTypeId}
+        tagNames={newClickUpTaskTagNames}
+        onOpenChange={setNewClickUpTaskOpen}
+        onListChange={(value) => {
+          const option = clickUpListOptions.find((item) => item.list.id === value)
+          setNewClickUpTaskListId(value)
+          setNewClickUpTaskStatus(option?.list.statuses?.[0]?.status ?? '')
+        }}
+        onTitleChange={setNewClickUpTaskTitle}
+        onDescriptionChange={setNewClickUpTaskDescription}
+        onStatusChange={setNewClickUpTaskStatus}
+        onPriorityChange={setNewClickUpTaskPriority}
+        onTaskTypeChange={setNewClickUpTaskTypeId}
+        onTagNamesChange={setNewClickUpTaskTagNames}
+        onSubmit={() => void handleCreateNewClickUpTask()}
+      />
 
       <GitLabItemDialog
         item={gitlabDialogItem}

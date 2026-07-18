@@ -2766,7 +2766,13 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
         setLinkedGitLabIssue(null)
         setLinkedGitLabMR(null)
         const linkedProvider = linkedWorkItem ? getLinkedWorkItemProvider(linkedWorkItem) : null
-        if (linkedWorkItem && linkedProvider !== 'linear' && linkedProvider !== 'jira') {
+        // Account-backed task links remain valid when the target becomes a folder project.
+        if (
+          linkedWorkItem &&
+          linkedProvider !== 'linear' &&
+          linkedProvider !== 'jira' &&
+          linkedProvider !== 'clickup'
+        ) {
           setLinkedWorkItem(null)
         }
         setSparseEnabled(false)

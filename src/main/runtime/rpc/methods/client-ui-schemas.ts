@@ -14,6 +14,7 @@ import { normalizeDisabledTuiAgents } from '../../../../shared/tui-agent-selecti
 import { normalizePRBotAuthorOverrides } from '../../../../shared/pr-bot-author-overrides'
 import { normalizeWorktreeCardProperties } from '../../../../shared/worktree-card-properties'
 import type { TaskProvider } from '../../../../shared/types'
+import { ClientUITaskResumeState } from './client-ui-task-resume-schema'
 
 const NullableString = z.string().nullable()
 const StringArray = z.array(z.string())
@@ -59,16 +60,6 @@ const WorkspaceStatusDefinition = z.object({
   color: z.string().optional(),
   icon: z.string().optional()
 })
-const TaskResumeState = z
-  .object({
-    githubMode: z.enum(['items', 'project']).optional(),
-    githubItemsPreset: z.string().nullable().optional(),
-    githubItemsQuery: z.string().optional(),
-    githubProjectHiddenFieldIdsByView: z.record(z.string(), z.array(z.string())).optional(),
-    linearPreset: z.enum(['assigned', 'created', 'all', 'completed']).optional(),
-    linearQuery: z.string().optional()
-  })
-  .strict()
 const WorkspaceCleanupDismissal = z
   .object({
     worktreeId: z.string(),
@@ -259,7 +250,7 @@ export const UiUpdate = z
     sidekickId: z.string().optional(),
     customSidekicks: UnknownRecordArray.optional(),
     sidekickSize: z.number().finite().optional(),
-    taskResumeState: TaskResumeState.optional(),
+    taskResumeState: ClientUITaskResumeState.optional(),
     workspaceCleanup: WorkspaceCleanup.optional(),
     featureTipsSeenIds: FeatureTipIds.optional(),
     featureInteractions: FeatureInteractions.optional(),

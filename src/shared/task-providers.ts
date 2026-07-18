@@ -1,6 +1,12 @@
-export type TaskProvider = 'github' | 'gitlab' | 'linear' | 'jira'
+export type TaskProvider = 'github' | 'gitlab' | 'linear' | 'jira' | 'clickup'
 
-export const TASK_PROVIDERS: readonly TaskProvider[] = ['github', 'gitlab', 'linear', 'jira']
+export const TASK_PROVIDERS: readonly TaskProvider[] = [
+  'github',
+  'gitlab',
+  'linear',
+  'jira',
+  'clickup'
+]
 
 const TASK_PROVIDER_SET = new Set<TaskProvider>(TASK_PROVIDERS)
 
@@ -55,6 +61,7 @@ export function normalizeVisibleTaskProviders(value: unknown): TaskProvider[] {
 export type TaskProviderAvailability = {
   gitlabInstalled: boolean
   linearConnected: boolean
+  clickupConnected?: boolean
 }
 
 export function filterAvailableTaskProviders(
@@ -100,9 +107,9 @@ function isTaskProviderAvailable(
   if (provider === 'gitlab') {
     return availability.gitlabInstalled
   }
-  // Why: Jira can be connected from the Tasks surface itself, so hiding it
-  // when disconnected would remove the entry point for first-time setup.
-  if (provider === 'jira') {
+  // Why: account-backed providers can be connected from the Tasks surface
+  // itself, so hiding them when disconnected removes first-time setup.
+  if (provider === 'jira' || provider === 'clickup') {
     return true
   }
   return availability.linearConnected
