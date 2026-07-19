@@ -14050,30 +14050,20 @@ export default function TaskPage(): React.JSX.Element {
                             const canExpandTask = canExpandClickUpTask(
                               task,
                               hasChildren,
-                              !selectedClickUpViewId
+                              // Why: root pages omit child metadata, but unresolved descendants
+                              // otherwise advertise false chevrons after their branch is loaded.
+                              !selectedClickUpViewId && depth === 0
                             )
+                            // Why: include row padding and tree indentation so every pixel before
+                            // the ID belongs to disclosure instead of task navigation.
+                            const clickUpDisclosureHitWidth = `calc(${depth * 14 + 28 + (clickUpGrouping === 'none' ? 0 : CLICKUP_GROUPED_ROW_INSET)}px + 0.75rem)`
                             return (
                               <div
                                 key={virtualRow.key}
                                 ref={clickUpVirtualizer.measureElement}
                                 data-index={virtualRow.index}
-                                role="button"
-                                tabIndex={0}
-                                onClick={() => {
-                                  setSelectedClickUpTaskDetail(null)
-                                  setClickUpTaskDetailError(null)
-                                  setSelectedClickUpTaskId(task.id)
-                                }}
-                                onKeyDown={(event) => {
-                                  if (event.key === 'Enter' || event.key === ' ') {
-                                    event.preventDefault()
-                                    setSelectedClickUpTaskDetail(null)
-                                    setClickUpTaskDetailError(null)
-                                    setSelectedClickUpTaskId(task.id)
-                                  }
-                                }}
                                 className={cn(
-                                  'group/clickup-task-row absolute left-0 top-0 grid w-full cursor-pointer grid-cols-[var(--clickup-grid-template)] items-center gap-3 border-b border-border/40 px-3 py-2 text-sm transition hover:bg-muted/30 max-md:grid-cols-[minmax(0,1fr)_56px]',
+                                  'group/clickup-task-row absolute left-0 top-0 grid w-full grid-cols-[var(--clickup-grid-template)] items-center gap-3 border-b border-border/40 px-3 py-2 text-sm transition hover:bg-muted/30 max-md:grid-cols-[minmax(0,1fr)_56px]',
                                   selected && 'bg-muted/50'
                                 )}
                                 style={
@@ -14083,143 +14073,134 @@ export default function TaskPage(): React.JSX.Element {
                                   } as React.CSSProperties
                                 }
                               >
-                                <div
-                                  className="min-w-0"
-                                  style={{
-                                    paddingLeft:
-                                      clickUpGrouping === 'none' ? 0 : CLICKUP_GROUPED_ROW_INSET
-                                  }}
-                                >
-                                  <div className="flex min-w-0 items-center gap-2">
-                                    {clickUpViewMode === 'tree' ? (
-                                      canExpandTask ? (
-                                        <button
-                                          type="button"
-                                          onClick={(event) => {
-                                            event.stopPropagation()
-                                            toggleClickUpTaskExpansion(task)
-                                          }}
-                                          aria-label={
-                                            expanded
-                                              ? translate(
-                                                  'auto.components.TaskPage.clickupCollapseTask',
-                                                  'Collapse {{value0}}',
-                                                  { value0: task.title }
-                                                )
-                                              : translate(
-                                                  'auto.components.TaskPage.clickupExpandTask',
-                                                  'Expand {{value0}}',
-                                                  { value0: task.title }
-                                                )
-                                          }
-                                          className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                                          style={{ marginLeft: depth * 14 }}
-                                        >
-                                          {subtasksLoading ? (
-                                            <LoaderCircle className="size-3.5 animate-spin" />
-                                          ) : expanded ? (
-                                            <ChevronDown className="size-3.5" />
-                                          ) : (
-                                            <ChevronRight className="size-3.5" />
-                                          )}
-                                        </button>
-                                      ) : subtasksLoading ? (
-                                        <button
-                                          type="button"
-                                          onClick={(event) => {
-                                            event.stopPropagation()
-                                            toggleClickUpTaskExpansion(task)
-                                          }}
-                                          onKeyDown={(event) => event.stopPropagation()}
-                                          className="inline-flex size-5 shrink-0 items-center justify-center text-muted-foreground"
-                                          style={{ marginLeft: depth * 14 }}
-                                          aria-label={translate(
-                                            'auto.components.TaskPage.clickupLoadSubtasks',
-                                            'Load subtasks for {{value0}}',
-                                            { value0: task.title }
-                                          )}
-                                        >
+                                <div className="flex min-w-0 items-stretch">
+                                  {clickUpViewMode === 'tree' ? (
+                                    canExpandTask ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleClickUpTaskExpansion(task)}
+                                        aria-label={
+                                          expanded
+                                            ? translate(
+                                                'auto.components.TaskPage.clickupCollapseTask',
+                                                'Collapse {{value0}}',
+                                                { value0: task.title }
+                                              )
+                                            : translate(
+                                                'auto.components.TaskPage.clickupExpandTask',
+                                                'Expand {{value0}}',
+                                                { value0: task.title }
+                                              )
+                                        }
+                                        className="-my-2 -ml-3 inline-flex shrink-0 items-center justify-end py-2 pr-3 pl-3 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                        style={{ width: clickUpDisclosureHitWidth }}
+                                      >
+                                        {subtasksLoading ? (
                                           <LoaderCircle className="size-3.5 animate-spin" />
-                                        </button>
-                                      ) : subtasksFailed ? (
-                                        <Tooltip>
-                                          <TooltipTrigger asChild>
-                                            <button
-                                              type="button"
-                                              onClick={(event) => {
-                                                event.stopPropagation()
-                                                void loadClickUpTaskChildren(task)
-                                              }}
-                                              onKeyDown={(event) => event.stopPropagation()}
-                                              className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                                              style={{ marginLeft: depth * 14 }}
-                                              aria-label={translate(
-                                                'auto.components.TaskPage.clickupRetrySubtasks',
-                                                'Retry loading subtasks'
-                                              )}
-                                            >
-                                              <RefreshCw className="size-3.5" />
-                                            </button>
-                                          </TooltipTrigger>
-                                          <TooltipContent side="top" sideOffset={6}>
-                                            {translate(
+                                        ) : expanded ? (
+                                          <ChevronDown className="size-3.5" />
+                                        ) : (
+                                          <ChevronRight className="size-3.5" />
+                                        )}
+                                      </button>
+                                    ) : subtasksLoading ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleClickUpTaskExpansion(task)}
+                                        className="-my-2 -ml-3 inline-flex shrink-0 items-center justify-end py-2 pr-3 pl-3 text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                        style={{ width: clickUpDisclosureHitWidth }}
+                                        aria-label={translate(
+                                          'auto.components.TaskPage.clickupLoadSubtasks',
+                                          'Load subtasks for {{value0}}',
+                                          { value0: task.title }
+                                        )}
+                                      >
+                                        <LoaderCircle className="size-3.5 animate-spin" />
+                                      </button>
+                                    ) : subtasksFailed ? (
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <button
+                                            type="button"
+                                            onClick={() => void loadClickUpTaskChildren(task)}
+                                            className="-my-2 -ml-3 inline-flex shrink-0 items-center justify-end py-2 pr-3 pl-3 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                            style={{ width: clickUpDisclosureHitWidth }}
+                                            aria-label={translate(
                                               'auto.components.TaskPage.clickupRetrySubtasks',
                                               'Retry loading subtasks'
                                             )}
-                                          </TooltipContent>
-                                        </Tooltip>
-                                      ) : (
-                                        <span
-                                          className="size-5 shrink-0"
-                                          style={{ marginLeft: depth * 14 }}
-                                          aria-hidden="true"
-                                        />
-                                      )
-                                    ) : null}
-                                    <button
-                                      type="button"
-                                      onClick={(event) => {
-                                        event.stopPropagation()
-                                        void copyClickUpTaskIdentifier(identifier)
-                                      }}
-                                      onKeyDown={(event) => {
-                                        event.stopPropagation()
-                                      }}
-                                      className={cn(
-                                        'inline-flex shrink-0 items-center gap-1 rounded border border-border/50 bg-muted/50 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                                        idCopied && 'border-primary/40 text-primary'
-                                      )}
-                                      aria-label={
-                                        idCopied
-                                          ? translate(
-                                              'auto.components.TaskPage.clickupTaskIdCopied',
-                                              'Copied {{value0}}',
-                                              { value0: identifier }
-                                            )
-                                          : translate(
-                                              'auto.components.TaskPage.clickupCopyTaskId',
-                                              'Copy {{value0}}',
-                                              { value0: identifier }
-                                            )
-                                      }
-                                      title={
-                                        idCopied
-                                          ? translate(
-                                              'auto.components.TaskPage.clickupTaskIdCopied',
-                                              'Copied {{value0}}',
-                                              { value0: identifier }
-                                            )
-                                          : translate(
-                                              'auto.components.TaskPage.clickupCopyTaskId',
-                                              'Copy {{value0}}',
-                                              { value0: identifier }
-                                            )
-                                      }
-                                    >
-                                      {idCopied ? <Check className="size-3" /> : null}
-                                      {identifier}
-                                    </button>
-                                    <span className="truncate font-medium text-foreground">
+                                          >
+                                            <RefreshCw className="size-3.5" />
+                                          </button>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="top" sideOffset={6}>
+                                          {translate(
+                                            'auto.components.TaskPage.clickupRetrySubtasks',
+                                            'Retry loading subtasks'
+                                          )}
+                                        </TooltipContent>
+                                      </Tooltip>
+                                    ) : (
+                                      <span
+                                        className="-my-2 -ml-3 shrink-0"
+                                        style={{ width: clickUpDisclosureHitWidth }}
+                                        aria-hidden="true"
+                                      />
+                                    )
+                                  ) : clickUpGrouping === 'none' ? null : (
+                                    <span
+                                      className="shrink-0"
+                                      style={{ width: CLICKUP_GROUPED_ROW_INSET }}
+                                      aria-hidden="true"
+                                    />
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => void copyClickUpTaskIdentifier(identifier)}
+                                    className={cn(
+                                      'inline-flex shrink-0 items-center gap-1 rounded border border-border/50 bg-muted/50 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                                      idCopied && 'border-primary/40 text-primary'
+                                    )}
+                                    aria-label={
+                                      idCopied
+                                        ? translate(
+                                            'auto.components.TaskPage.clickupTaskIdCopied',
+                                            'Copied {{value0}}',
+                                            { value0: identifier }
+                                          )
+                                        : translate(
+                                            'auto.components.TaskPage.clickupCopyTaskId',
+                                            'Copy {{value0}}',
+                                            { value0: identifier }
+                                          )
+                                    }
+                                    title={
+                                      idCopied
+                                        ? translate(
+                                            'auto.components.TaskPage.clickupTaskIdCopied',
+                                            'Copied {{value0}}',
+                                            { value0: identifier }
+                                          )
+                                        : translate(
+                                            'auto.components.TaskPage.clickupCopyTaskId',
+                                            'Copy {{value0}}',
+                                            { value0: identifier }
+                                          )
+                                    }
+                                  >
+                                    {idCopied ? <Check className="size-3" /> : null}
+                                    {identifier}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedClickUpTaskDetail(null)
+                                      setClickUpTaskDetailError(null)
+                                      setSelectedClickUpTaskId(task.id)
+                                    }}
+                                    className="-my-2 flex min-w-0 flex-1 self-stretch items-center gap-2 rounded px-2 py-2 text-left transition hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                  >
+                                    <span className="min-w-0 truncate font-medium text-foreground">
                                       {task.title}
                                     </span>
                                     {task.subtaskCount ? (
@@ -14228,33 +14209,29 @@ export default function TaskPage(): React.JSX.Element {
                                         {task.subtaskCount}
                                       </span>
                                     ) : null}
-                                    <Tooltip>
-                                      <TooltipTrigger asChild>
-                                        <button
-                                          type="button"
-                                          onClick={(event) => {
-                                            event.stopPropagation()
-                                            openClickUpInlineSubtaskComposer(task)
-                                          }}
-                                          onKeyDown={(event) => event.stopPropagation()}
-                                          className="pointer-events-none inline-flex size-6 shrink-0 items-center justify-center rounded border border-border/50 bg-background text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/clickup-task-row:pointer-events-auto group-hover/clickup-task-row:opacity-100 group-focus-within/clickup-task-row:pointer-events-auto group-focus-within/clickup-task-row:opacity-100"
-                                          aria-label={translate(
-                                            'auto.components.TaskPage.clickupAddSubtaskTo',
-                                            'Add subtask to {{value0}}',
-                                            { value0: task.title }
-                                          )}
-                                        >
-                                          <Plus className="size-3.5" />
-                                        </button>
-                                      </TooltipTrigger>
-                                      <TooltipContent side="top" sideOffset={6}>
-                                        {translate(
-                                          'auto.components.TaskPage.clickupAddSubtask',
-                                          'Add subtask'
+                                  </button>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button
+                                        type="button"
+                                        onClick={() => openClickUpInlineSubtaskComposer(task)}
+                                        className="pointer-events-none inline-flex size-6 shrink-0 items-center justify-center rounded border border-border/50 bg-background text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/clickup-task-row:pointer-events-auto group-hover/clickup-task-row:opacity-100 group-focus-within/clickup-task-row:pointer-events-auto group-focus-within/clickup-task-row:opacity-100"
+                                        aria-label={translate(
+                                          'auto.components.TaskPage.clickupAddSubtaskTo',
+                                          'Add subtask to {{value0}}',
+                                          { value0: task.title }
                                         )}
-                                      </TooltipContent>
-                                    </Tooltip>
-                                  </div>
+                                      >
+                                        <Plus className="size-3.5" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" sideOffset={6}>
+                                      {translate(
+                                        'auto.components.TaskPage.clickupAddSubtask',
+                                        'Add subtask'
+                                      )}
+                                    </TooltipContent>
+                                  </Tooltip>
                                 </div>
                                 {clickUpDisplayProperties.has('type') ? (
                                   <div className="min-w-0 max-md:hidden">
