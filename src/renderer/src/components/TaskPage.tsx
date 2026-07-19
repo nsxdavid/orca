@@ -158,6 +158,10 @@ import {
 import { getHostDisplayLabelOverrides } from '../../../shared/host-setting-overrides'
 import ClickUpTaskWorkspace from '@/components/ClickUpTaskWorkspace'
 import ClickUpCreateTaskDialog from '@/components/ClickUpCreateTaskDialog'
+import {
+  getClickUpTaskIdentifier,
+  getClickUpTaskWorkspaceSeed
+} from '@/components/clickup-task-workspace-name'
 import { useClickUpTaskSync } from '@/components/use-clickup-task-sync'
 import { useClickUpListViews } from '@/components/use-clickup-list-views'
 import { ClickUpSavedViewSelect } from '@/components/clickup-saved-view-select'
@@ -228,7 +232,6 @@ import { cn } from '@/lib/utils'
 import {
   getLinkedWorkItemSuggestedName,
   getLinkedWorkItemWorkspaceName,
-  getClickUpTaskWorkspaceName,
   getTaskPresetQuery,
   PER_REPO_FETCH_LIMIT,
   CROSS_REPO_DISPLAY_LIMIT
@@ -591,17 +594,8 @@ function getJiraIssueWorkspaceSeed(issue: JiraIssue): string {
   )
 }
 
-function getClickUpTaskIdentifier(task: ClickUpTask): string {
-  return task.customId || `CU-${task.id}`
-}
-
 function getClickUpTaskDisplayId(task: ClickUpTask): string {
   return task.customId || task.id
-}
-
-function getClickUpTaskWorkspaceSeed(task: ClickUpTask): string {
-  const identifier = getClickUpTaskIdentifier(task)
-  return getClickUpTaskWorkspaceName({ identifier, title: task.title })
 }
 
 function getClickUpTaskTypeLabel(task: ClickUpTask): string {
@@ -4042,6 +4036,7 @@ export default function TaskPage(): React.JSX.Element {
   const listJiraIssues = useAppStore((s) => s.listJiraIssues)
   const checkJiraConnection = useAppStore((s) => s.checkJiraConnection)
   const clickUpStatus = useAppStore((s) => s.clickUpStatus)
+  const clickUpViewerUsername = clickUpStatus.viewer?.username
   const clickUpStatusChecked = useAppStore((s) => s.clickUpStatusChecked)
   const clickUpStatusContextKey = useAppStore((s) => s.clickUpStatusContextKey)
   const checkClickUpConnection = useAppStore((s) => s.checkClickUpConnection)
@@ -10645,11 +10640,11 @@ export default function TaskPage(): React.JSX.Element {
       openModal('new-workspace-composer', {
         linkedWorkItem,
         taskSourceContext: clickUpTaskSourceContext,
-        prefilledName: getClickUpTaskWorkspaceSeed(task),
+        prefilledName: getClickUpTaskWorkspaceSeed(task, clickUpViewerUsername),
         telemetrySource: 'sidebar'
       })
     },
-    [clickUpTaskSourceContext, openModal]
+    [clickUpTaskSourceContext, clickUpViewerUsername, openModal]
   )
 
   const handleUseClickUpTask = useCallback(
