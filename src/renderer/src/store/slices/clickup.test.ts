@@ -397,6 +397,7 @@ describe('createClickUpSlice task graph', () => {
     clickUpListTaskSubtasks.mockResolvedValueOnce({
       tasks: [child],
       discoveredTasks: [child, grandchild],
+      completeParentIds: ['child', 'grandchild'],
       page: 0,
       hasMore: false
     })
@@ -416,6 +417,63 @@ describe('createClickUpSlice task graph', () => {
       taskOrder: ['parent', 'child', 'grandchild'],
       childrenStateByParent: {
         parent: { ids: ['child'], status: 'complete', totalHint: 1 },
+        child: { ids: ['grandchild'], status: 'complete', totalHint: 1 },
+        grandchild: { ids: [], status: 'complete', totalHint: 0 }
+      }
+    })
+  })
+
+  it('loads a nested branch when the parent response omits its descendants', async () => {
+    const store = createTestStore()
+    const context = sourceContext('partial-subtree-runtime')
+    const key = `${getTaskSourceCacheScope(context)}::task-graph:workspace-1:list-1:open`
+    const parent = { ...task('parent'), hasSubtasks: true, subtaskCount: 1 }
+    const child = { ...task('child', 'parent'), hasSubtasks: true, subtaskCount: 1 }
+    const grandchild = {
+      ...task('grandchild', 'child'),
+      hasSubtasks: false,
+      subtaskCount: 0
+    }
+    clickUpListTaskPage.mockResolvedValueOnce({ tasks: [parent], page: 0, hasMore: false })
+    clickUpListTaskSubtasks
+      .mockResolvedValueOnce({
+        tasks: [child],
+        discoveredTasks: [child],
+        completeParentIds: [],
+        page: 0,
+        hasMore: false
+      })
+      .mockResolvedValueOnce({
+        tasks: [grandchild],
+        discoveredTasks: [grandchild],
+        completeParentIds: ['grandchild'],
+        page: 0,
+        hasMore: false
+      })
+
+    const args = {
+      key,
+      listId: 'list-1',
+      filter: 'open' as const,
+      workspaceId: 'workspace-1',
+      options: { sourceContext: context }
+    }
+    await store.getState().loadClickUpTaskGraph(args)
+    await store.getState().loadClickUpTaskBranch({ ...args, taskId: 'parent' })
+
+    expect(clickUpListTaskSubtasks).toHaveBeenCalledTimes(1)
+    expect(store.getState().clickUpTaskGraphs[key]?.childrenStateByParent).toMatchObject({
+      parent: { ids: ['child'], status: 'complete', totalHint: 1 },
+      child: { ids: [], status: 'idle', totalHint: 1 }
+    })
+
+    await store.getState().loadClickUpTaskBranch({ ...args, taskId: 'child' })
+
+    expect(clickUpListTaskSubtasks).toHaveBeenCalledTimes(2)
+    expect(clickUpListTaskSubtasks.mock.calls[1]?.[1]).toBe('child')
+    expect(store.getState().clickUpTaskGraphs[key]).toMatchObject({
+      taskOrder: ['parent', 'child', 'grandchild'],
+      childrenStateByParent: {
         child: { ids: ['grandchild'], status: 'complete', totalHint: 1 },
         grandchild: { ids: [], status: 'complete', totalHint: 0 }
       }

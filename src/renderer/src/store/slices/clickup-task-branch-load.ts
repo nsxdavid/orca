@@ -78,11 +78,6 @@ export async function performClickUpTaskBranchLoad(
       hasMore = result.hasMore
       page += 1
     }
-    // Why: ClickUp's parent-filtered pages cover the full descendant graph, so one completed
-    // branch read authoritatively resolves every returned task without per-child follow-ups.
-    for (const taskId of discoveredTasks.keys()) {
-      completeParentIds.add(taskId)
-    }
     updateClickUpGraphState(
       set,
       args.key,
