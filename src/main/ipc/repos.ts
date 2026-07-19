@@ -762,15 +762,16 @@ const ProjectHostSetupDeleteIpcArgs = z.object({
   setupId: z.string().min(1)
 })
 
-const FolderWorkspaceLinkedTaskArgs = z
+export const FolderWorkspaceLinkedTaskArgs = z
   .object({
-    provider: z.enum(['github', 'gitlab', 'linear', 'jira']),
+    provider: z.enum(['github', 'gitlab', 'linear', 'jira', 'clickup']),
     type: z.enum(['issue', 'pr', 'mr']),
     number: z.number().finite(),
     title: z.string().min(1),
     url: z.string().min(1),
     linearIdentifier: z.string().min(1).optional(),
     jiraIdentifier: z.string().min(1).optional(),
+    clickUpIdentifier: z.string().min(1).optional(),
     repoId: z.string().min(1).optional()
   })
   .nullable()

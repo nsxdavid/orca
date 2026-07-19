@@ -47,9 +47,10 @@ export type WorkspaceIntentWorkItem = {
   type: 'issue' | 'pr' | 'mr'
   number: number
   title: string
-  provider?: 'github' | 'gitlab' | 'linear' | 'jira'
+  provider?: 'github' | 'gitlab' | 'linear' | 'jira' | 'clickup'
   linearIdentifier?: string
   jiraIdentifier?: string
+  clickUpIdentifier?: string
 }
 
 export type WorkspaceIntentName = {
@@ -140,8 +141,33 @@ function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+function slugifyClickUpTaskNamePart(input: string): string {
+  return removeIntraWordApostrophes(input)
+    .trim()
+    .replace(/[\\/]+/g, '-')
+    .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+    .replace(/-+/g, '-')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^[.-]+|[.-]+$/g, '')
+}
+
+export function getClickUpTaskWorkspaceName(task: {
+  identifier: string
+  title: string
+  username?: string | null
+}): string {
+  const identifier = task.identifier.trim()
+  let title = task.title
+    .trim()
+    .replace(new RegExp(`^${escapeRegExp(identifier)}\\s*[:-]?\\s*`, 'i'), '')
+    .trim()
+  const titleSlug = slugifyClickUpTaskNamePart(title)
+  const userSlug = task.username ? slugifyClickUpTaskNamePart(task.username) : ''
+  return [identifier, titleSlug, userSlug].filter(Boolean).join('_')
+}
+
 function compactWorkItemTitle(title: string, item: WorkspaceIntentWorkItem): string {
-  const identifier = item.linearIdentifier ?? item.jiraIdentifier
+  const identifier = item.linearIdentifier ?? item.jiraIdentifier ?? item.clickUpIdentifier
   let withoutPrefix = title
     .trim()
     .replace(/^(?:issue|pr|pull request|mr|merge request)\s*[#!]?\d+\s*[:-]\s*/i, '')
@@ -166,6 +192,9 @@ function workItemIdentity(item: WorkspaceIntentWorkItem): string {
   if (item.jiraIdentifier) {
     return item.jiraIdentifier.toUpperCase()
   }
+  if (item.clickUpIdentifier) {
+    return item.clickUpIdentifier.toUpperCase()
+  }
   if (item.type === 'pr') {
     return `PR ${item.number}`
   }
@@ -178,7 +207,7 @@ function workItemIdentity(item: WorkspaceIntentWorkItem): string {
 export function getLinkedWorkItemWorkspaceName(
   item: WorkspaceIntentWorkItem
 ): WorkspaceIntentName | null {
-  const identifier = item.linearIdentifier ?? item.jiraIdentifier
+  const identifier = item.linearIdentifier ?? item.jiraIdentifier ?? item.clickUpIdentifier
   let subject = getLinkedWorkItemTitleSubject(item) || item.title.trim()
   if (identifier) {
     subject = subject

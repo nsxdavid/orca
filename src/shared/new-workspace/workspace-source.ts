@@ -78,6 +78,9 @@ export function getWorkspaceSourceProvider(item: WorkspaceSourceItemLike): Works
   if (item.linearIdentifier) {
     return 'linear'
   }
+  if (item.clickUpIdentifier) {
+    return 'clickup'
+  }
   if (item.jiraIdentifier || isJiraIssueUrl(item.url)) {
     return 'jira'
   }
@@ -188,9 +191,11 @@ export function buildWorkspaceSourceSelection(args: {
   return {
     kind,
     label:
-      provider === 'linear' || provider === 'jira' || linkedWorkItem.number === 0
-        ? linkedWorkItem.title
-        : `#${linkedWorkItem.number} ${linkedWorkItem.title}`,
+      provider === 'clickup'
+        ? getWorkspaceSourceName(linkedWorkItem).displayName
+        : provider === 'linear' || provider === 'jira' || linkedWorkItem.number === 0
+          ? linkedWorkItem.title
+          : `#${linkedWorkItem.number} ${linkedWorkItem.title}`,
     url: linkedWorkItem.url
   }
 }
@@ -202,5 +207,5 @@ export function shouldPreserveWorkspaceSourceOnRepoChange(
     return false
   }
   const provider = getWorkspaceSourceProvider(item)
-  return provider === 'linear' || provider === 'jira'
+  return provider === 'linear' || provider === 'jira' || provider === 'clickup'
 }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   getLinearIssueWorkspaceName,
+  getClickUpTaskWorkspaceName,
   getLinkedWorkItemSuggestedName,
   getLinkedWorkItemWorkspaceName,
   getWorkspaceIntentName,
@@ -79,6 +80,35 @@ describe('getLinkedWorkItemWorkspaceName', () => {
       displayName: 'PROJ-7 Fix flaky import',
       seedName: 'proj-7-fix-flaky-import'
     })
+  })
+
+  it('keeps ClickUp task identifiers in generated workspace names', () => {
+    expect(
+      getLinkedWorkItemWorkspaceName({
+        type: 'issue',
+        provider: 'clickup',
+        number: 0,
+        title: 'CU-86ae60ppt Fix useConvexFormationDataSource test missing useConvex mock',
+        clickUpIdentifier: 'CU-86ae60ppt'
+      })
+    ).toEqual({
+      displayName: 'CU-86ae60ppt Fix useConvexFormationDataSource test missing useConvex mock',
+      seedName: 'cu-86ae60ppt-fix-useconvexformationdatasource-te'
+    })
+  })
+})
+
+describe('getClickUpTaskWorkspaceName', () => {
+  it('uses the ClickUp GitHub branch pattern for task-backed workspace names', () => {
+    expect(
+      getClickUpTaskWorkspaceName({
+        identifier: 'CU-86aja1wk3',
+        title: 'Improve board breadcrumbs to return users to the originating deck slide',
+        username: 'David Whatley'
+      })
+    ).toBe(
+      'CU-86aja1wk3_Improve-board-breadcrumbs-to-return-users-to-the-originating-deck-slide_David-Whatley'
+    )
   })
 })
 

@@ -400,7 +400,15 @@ describe('repo RPC methods', () => {
     await dispatcher.dispatch(
       makeRequest('folderWorkspace.create', {
         projectGroupId: group.id,
-        name: 'Refund fix'
+        name: 'Refund fix',
+        linkedTask: {
+          provider: 'clickup',
+          type: 'issue',
+          number: 0,
+          title: 'CU-123 Refund fix',
+          url: 'https://app.clickup.com/t/CU-123',
+          clickUpIdentifier: 'CU-123'
+        }
       })
     )
     await dispatcher.dispatch(
@@ -440,7 +448,15 @@ describe('repo RPC methods', () => {
     expect(runtime.listFolderWorkspaces).toHaveBeenCalled()
     expect(runtime.createFolderWorkspace).toHaveBeenCalledWith({
       projectGroupId: group.id,
-      name: 'Refund fix'
+      name: 'Refund fix',
+      linkedTask: {
+        provider: 'clickup',
+        type: 'issue',
+        number: 0,
+        title: 'CU-123 Refund fix',
+        url: 'https://app.clickup.com/t/CU-123',
+        clickUpIdentifier: 'CU-123'
+      }
     })
     expect(runtime.updateFolderWorkspace).toHaveBeenCalledWith('folder-workspace-1', {
       comment: 'x'

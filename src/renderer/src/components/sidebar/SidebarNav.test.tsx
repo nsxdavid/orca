@@ -343,7 +343,10 @@ describe('SidebarNav', () => {
   })
 
   it('keeps unavailable Tasks context-menu-capable while left click remains inert', async () => {
-    setSidebarState({ repos: [folderRepo()] })
+    setSidebarState({
+      settings: { ...getDefaultSettings('/tmp'), visibleTaskProviders: ['github'] },
+      repos: [folderRepo()]
+    })
     const container = await renderSidebarNav()
 
     const tasksButton = getButtonByText(container, 'Tasks')

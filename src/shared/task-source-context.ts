@@ -8,7 +8,7 @@ import {
 } from './execution-host'
 import type { GlobalSettings, ProjectProviderIdentity, Repo } from './types'
 
-export type TaskProvider = 'github' | 'gitlab' | 'linear' | 'jira'
+export type TaskProvider = 'github' | 'gitlab' | 'linear' | 'jira' | 'clickup'
 
 export type GitHubTaskProviderIdentity = ProjectProviderIdentity & {
   provider: 'github'
@@ -37,11 +37,20 @@ export type JiraTaskProviderIdentity = {
   projectKey?: string | null
 }
 
+export type ClickUpTaskProviderIdentity = {
+  provider: 'clickup'
+  workspaceId?: string | null
+  spaceId?: string | null
+  folderId?: string | null
+  listId?: string | null
+}
+
 export type TaskProviderIdentity =
   | GitHubTaskProviderIdentity
   | GitLabTaskProviderIdentity
   | LinearTaskProviderIdentity
   | JiraTaskProviderIdentity
+  | ClickUpTaskProviderIdentity
 
 export type TaskSourceContext = {
   kind: 'task-source'
@@ -182,6 +191,7 @@ function normalizeTaskProvider(value: string): TaskProvider | null {
     case 'gitlab':
     case 'linear':
     case 'jira':
+    case 'clickup':
       return value
     default:
       return null
@@ -216,6 +226,10 @@ function providerIdentityCachePart(identity: TaskProviderIdentity | null | undef
       return [identity.workspaceId, identity.teamId ?? identity.teamKey].filter(Boolean).join('/')
     case 'jira':
       return [identity.siteId ?? identity.siteUrl, identity.projectKey].filter(Boolean).join('/')
+    case 'clickup':
+      return [identity.workspaceId, identity.spaceId, identity.folderId, identity.listId]
+        .filter(Boolean)
+        .join('/')
   }
 }
 

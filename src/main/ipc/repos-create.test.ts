@@ -92,12 +92,27 @@ vi.mock('./ssh', () => ({
   getActiveMultiplexer: vi.fn()
 }))
 
-import { registerRepoHandlers } from './repos'
+import { FolderWorkspaceLinkedTaskArgs, registerRepoHandlers } from './repos'
 
 type CreateArgs = { parentPath: string; name: string; kind: 'git' | 'folder' }
 type CreateResult =
   | { repo: { id: string; path: string; kind: 'git' | 'folder' } }
   | { error: string }
+
+describe('folder workspace linked task schema', () => {
+  it('accepts ClickUp task metadata', () => {
+    const linkedTask = {
+      provider: 'clickup' as const,
+      type: 'issue' as const,
+      number: 0,
+      title: 'CU-123 Fix task',
+      url: 'https://app.clickup.com/t/CU-123',
+      clickUpIdentifier: 'CU-123'
+    }
+
+    expect(FolderWorkspaceLinkedTaskArgs.parse(linkedTask)).toEqual(linkedTask)
+  })
+})
 
 describe('repos:create', () => {
   const handlers = new Map<string, (event: unknown, args: unknown) => unknown>()

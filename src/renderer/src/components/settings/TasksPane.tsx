@@ -1,4 +1,4 @@
-import { Check, Github, Gitlab } from 'lucide-react'
+import { Check, Github, Gitlab, ListChecks } from 'lucide-react'
 import type { GlobalSettings, TaskProvider } from '../../../../shared/types'
 import {
   TASK_PROVIDERS,
@@ -75,6 +75,19 @@ const TASK_PROVIDER_OPTIONS: readonly {
       )
     },
     Icon: ({ className }) => <JiraIcon className={className} />
+  },
+  {
+    id: 'clickup',
+    get label() {
+      return translate('auto.components.settings.TasksPane.clickupLabel', 'ClickUp')
+    },
+    get description() {
+      return translate(
+        'auto.components.settings.TasksPane.clickupDescription',
+        'Show ClickUp in the Tasks source picker and sidebar shortcuts.'
+      )
+    },
+    Icon: ({ className }) => <ListChecks className={className} />
   }
 ]
 
@@ -122,6 +135,8 @@ export function TasksPane({ settings, updateSettings }: TasksPaneProps): React.J
             'gitlab',
             'linear',
             'jira',
+            'clickup',
+            'click up',
             'atlassian',
             'display',
             'hide'

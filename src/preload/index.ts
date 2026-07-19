@@ -18,6 +18,8 @@ import type {
   BaseRefSearchResult,
   BaseRefDefaultResult,
   BrowserViewportOverride,
+  ClickUpCreateTaskArgs,
+  ClickUpCreateTaskResult,
   CustomPet,
   FsChangedPayload,
   GetRateLimitResult,
@@ -1833,6 +1835,133 @@ const api = {
       projectKey: string
       siteId?: string
     }): Promise<JiraProjectStatusOrder> => ipcRenderer.invoke('jira:getProjectStatusOrder', args)
+  },
+
+  clickup: {
+    connect: (args: {
+      apiToken: string
+    }): Promise<{ ok: true; viewer: unknown } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('clickup:connect', args),
+
+    disconnect: (): Promise<void> => ipcRenderer.invoke('clickup:disconnect'),
+
+    selectWorkspace: (args: { workspaceId: string }): Promise<unknown> =>
+      ipcRenderer.invoke('clickup:selectWorkspace', args),
+
+    status: (): Promise<unknown> => ipcRenderer.invoke('clickup:status'),
+
+    testConnection: (): Promise<{ ok: true; viewer: unknown } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('clickup:testConnection'),
+
+    listSpaces: (args: { workspaceId: string }): Promise<unknown[]> =>
+      ipcRenderer.invoke('clickup:listSpaces', args),
+
+    listFolders: (args: { spaceId: string; workspaceId?: string }): Promise<unknown[]> =>
+      ipcRenderer.invoke('clickup:listFolders', args),
+
+    listSpaceTags: (args: { spaceId: string; workspaceId?: string }): Promise<unknown[]> =>
+      ipcRenderer.invoke('clickup:listSpaceTags', args),
+
+    listTaskTypes: (args?: { workspaceId?: string }): Promise<unknown[]> =>
+      ipcRenderer.invoke('clickup:listTaskTypes', args),
+
+    listAssignableMembers: (args: { listId: string; workspaceId?: string }): Promise<unknown[]> =>
+      ipcRenderer.invoke('clickup:listAssignableMembers', args),
+
+    listFolderlessLists: (args: { spaceId: string; workspaceId?: string }): Promise<unknown[]> =>
+      ipcRenderer.invoke('clickup:listFolderlessLists', args),
+
+    listFolderLists: (args: {
+      folderId: string
+      spaceId: string
+      workspaceId?: string
+    }): Promise<unknown[]> => ipcRenderer.invoke('clickup:listFolderLists', args),
+
+    listTasks: (args: {
+      listId: string
+      filter?: 'open' | 'all' | 'closed'
+      limit?: number
+      workspaceId?: string
+    }): Promise<unknown[]> => ipcRenderer.invoke('clickup:listTasks', args),
+
+    listViews: (args: { listId: string; workspaceId?: string }): Promise<unknown> =>
+      ipcRenderer.invoke('clickup:listViews', args),
+
+    listViewTaskPage: (args: {
+      viewId: string
+      listId: string
+      page?: number
+      workspaceId?: string
+    }): Promise<unknown> => ipcRenderer.invoke('clickup:listViewTaskPage', args),
+
+    listTaskPage: (args: {
+      listId: string
+      filter?: 'open' | 'all' | 'closed'
+      page?: number
+      workspaceId?: string
+      includeSubtasks?: boolean
+    }): Promise<unknown> => ipcRenderer.invoke('clickup:listTaskPage', args),
+
+    listTaskSubtasks: (args: {
+      taskId: string
+      listId: string
+      filter?: 'open' | 'all' | 'closed'
+      page?: number
+      workspaceId?: string
+      priority?: 'background' | 'interactive'
+    }): Promise<unknown> => ipcRenderer.invoke('clickup:listTaskSubtasks', args),
+
+    searchTasks: (args: {
+      listId: string
+      query: string
+      limit?: number
+      workspaceId?: string
+    }): Promise<unknown[]> => ipcRenderer.invoke('clickup:searchTasks', args),
+
+    getTask: (args: { taskId: string; listId: string; workspaceId?: string }): Promise<unknown> =>
+      ipcRenderer.invoke('clickup:getTask', args),
+
+    createTask: (
+      args: ClickUpCreateTaskArgs & { workspaceId?: string }
+    ): Promise<ClickUpCreateTaskResult> => ipcRenderer.invoke('clickup:createTask', args),
+
+    updateTask: (args: {
+      taskId: string
+      updates: unknown
+      workspaceId?: string
+    }): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('clickup:updateTask', args),
+
+    addTaskTag: (args: {
+      taskId: string
+      tagName: string
+      workspaceId?: string
+    }): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('clickup:addTaskTag', args),
+
+    removeTaskTag: (args: {
+      taskId: string
+      tagName: string
+      workspaceId?: string
+    }): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('clickup:removeTaskTag', args),
+
+    addTaskComment: (args: {
+      taskId: string
+      body: string
+      workspaceId?: string
+    }): Promise<{ ok: true; id: string } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('clickup:addTaskComment', args),
+
+    taskComments: (args: { taskId: string; workspaceId?: string }): Promise<unknown[]> =>
+      ipcRenderer.invoke('clickup:taskComments', args),
+    addCommentReply: (args: {
+      commentId: string
+      body: string
+      workspaceId?: string
+    }): Promise<unknown> => ipcRenderer.invoke('clickup:addCommentReply', args),
+    commentReplies: (args: { commentId: string; workspaceId?: string }): Promise<unknown[]> =>
+      ipcRenderer.invoke('clickup:commentReplies', args)
   },
 
   starNag: {

@@ -20,6 +20,7 @@ import { createBrowserUuid } from '@/lib/browser-uuid'
 export { getLinkedWorkItemSuggestedName } from '../../../shared/workspace-name'
 export { getLinkedWorkItemWorkspaceName } from '../../../shared/workspace-name'
 export { getWorkspaceIntentName } from '../../../shared/workspace-name'
+export { getClickUpTaskWorkspaceName } from '../../../shared/workspace-name'
 
 /**
  * Why: the TaskPage's preset buttons and the openTaskPage prefetcher both need

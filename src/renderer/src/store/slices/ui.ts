@@ -327,6 +327,33 @@ const VALID_JIRA_PRESETS = new Set<NonNullable<TaskResumeState['jiraPreset']>>([
   'all',
   'done'
 ])
+const VALID_CLICKUP_VIEW_MODES = new Set<NonNullable<TaskResumeState['clickUpViewMode']>>([
+  'flat',
+  'tree'
+])
+const VALID_CLICKUP_SUBTASK_MODES = new Set<NonNullable<TaskResumeState['clickUpSubtaskMode']>>([
+  'collapsed',
+  'expanded',
+  'separate'
+])
+const VALID_CLICKUP_GROUP_DIRECTIONS = new Set<
+  NonNullable<TaskResumeState['clickUpGroupDirection']>
+>(['ascending', 'descending'])
+const VALID_CLICKUP_GROUPINGS = new Set<NonNullable<TaskResumeState['clickUpGrouping']>>([
+  'none',
+  'status',
+  'priority',
+  'type',
+  'tag'
+])
+const VALID_CLICKUP_ORDERINGS = new Set<NonNullable<TaskResumeState['clickUpOrdering']>>([
+  'updated',
+  'priority',
+  'identity'
+])
+const VALID_CLICKUP_DISPLAY_PROPERTIES = new Set<
+  NonNullable<TaskResumeState['clickUpDisplayProperties']>[number]
+>(['type', 'status', 'priority', 'tags', 'assignees', 'updated'])
 
 function resolvePaneKeyWorktreeIdFromTabs(state: AppState, paneKey: string): string | null {
   const parsed = parsePaneKey(paneKey)
@@ -602,6 +629,94 @@ function sanitizeTaskResumeState(value: unknown): TaskResumeState | undefined {
   }
   if (typeof input.jiraQuery === 'string') {
     next.jiraQuery = input.jiraQuery
+  }
+  if (typeof input.clickUpWorkspaceId === 'string' && input.clickUpWorkspaceId.trim()) {
+    next.clickUpWorkspaceId = input.clickUpWorkspaceId
+  }
+  if (typeof input.clickUpSpaceId === 'string' && input.clickUpSpaceId.trim()) {
+    next.clickUpSpaceId = input.clickUpSpaceId
+  }
+  if (typeof input.clickUpListId === 'string' && input.clickUpListId.trim()) {
+    next.clickUpListId = input.clickUpListId
+  }
+  if (typeof input.clickUpViewId === 'string' && input.clickUpViewId.trim()) {
+    next.clickUpViewId = input.clickUpViewId
+  }
+  if (typeof input.clickUpQuery === 'string') {
+    next.clickUpQuery = input.clickUpQuery
+  }
+  if (
+    typeof input.clickUpViewMode === 'string' &&
+    VALID_CLICKUP_VIEW_MODES.has(
+      input.clickUpViewMode as NonNullable<TaskResumeState['clickUpViewMode']>
+    )
+  ) {
+    next.clickUpViewMode = input.clickUpViewMode as NonNullable<TaskResumeState['clickUpViewMode']>
+  }
+  if (
+    typeof input.clickUpSubtaskMode === 'string' &&
+    VALID_CLICKUP_SUBTASK_MODES.has(
+      input.clickUpSubtaskMode as NonNullable<TaskResumeState['clickUpSubtaskMode']>
+    )
+  ) {
+    next.clickUpSubtaskMode = input.clickUpSubtaskMode as NonNullable<
+      TaskResumeState['clickUpSubtaskMode']
+    >
+  }
+  if (
+    typeof input.clickUpGroupDirection === 'string' &&
+    VALID_CLICKUP_GROUP_DIRECTIONS.has(
+      input.clickUpGroupDirection as NonNullable<TaskResumeState['clickUpGroupDirection']>
+    )
+  ) {
+    next.clickUpGroupDirection = input.clickUpGroupDirection as NonNullable<
+      TaskResumeState['clickUpGroupDirection']
+    >
+  }
+  if (
+    typeof input.clickUpGrouping === 'string' &&
+    VALID_CLICKUP_GROUPINGS.has(
+      input.clickUpGrouping as NonNullable<TaskResumeState['clickUpGrouping']>
+    )
+  ) {
+    next.clickUpGrouping = input.clickUpGrouping as NonNullable<TaskResumeState['clickUpGrouping']>
+  }
+  if (
+    typeof input.clickUpOrdering === 'string' &&
+    VALID_CLICKUP_ORDERINGS.has(
+      input.clickUpOrdering as NonNullable<TaskResumeState['clickUpOrdering']>
+    )
+  ) {
+    next.clickUpOrdering = input.clickUpOrdering as NonNullable<TaskResumeState['clickUpOrdering']>
+  }
+  if (typeof input.clickUpShowClosedTasks === 'boolean') {
+    next.clickUpShowClosedTasks = input.clickUpShowClosedTasks
+  }
+  if (Array.isArray(input.clickUpDisplayProperties)) {
+    const properties = input.clickUpDisplayProperties.filter(
+      (property): property is NonNullable<TaskResumeState['clickUpDisplayProperties']>[number] =>
+        typeof property === 'string' &&
+        VALID_CLICKUP_DISPLAY_PROPERTIES.has(
+          property as NonNullable<TaskResumeState['clickUpDisplayProperties']>[number]
+        )
+    )
+    if (properties.length > 0) {
+      next.clickUpDisplayProperties = [...new Set(properties)]
+    }
+  }
+  if (Array.isArray(input.clickUpExpandedTaskIds)) {
+    const expandedTaskIds = input.clickUpExpandedTaskIds.filter(
+      (taskId): taskId is string => typeof taskId === 'string' && taskId.trim().length > 0
+    )
+    if (expandedTaskIds.length > 0) {
+      next.clickUpExpandedTaskIds = [...new Set(expandedTaskIds)]
+    }
+  }
+  if (
+    typeof input.clickUpExpandedTaskContextKey === 'string' &&
+    input.clickUpExpandedTaskContextKey.trim()
+  ) {
+    next.clickUpExpandedTaskContextKey = input.clickUpExpandedTaskContextKey
   }
 
   return Object.keys(next).length > 0 ? next : undefined

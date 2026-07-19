@@ -20,7 +20,8 @@ export function normalizeFolderWorkspaceLinkedTask(
     raw.provider !== 'github' &&
     raw.provider !== 'gitlab' &&
     raw.provider !== 'linear' &&
-    raw.provider !== 'jira'
+    raw.provider !== 'jira' &&
+    raw.provider !== 'clickup'
   ) {
     return null
   }
@@ -48,6 +49,9 @@ export function normalizeFolderWorkspaceLinkedTask(
       : {}),
     ...(typeof raw.jiraIdentifier === 'string' && raw.jiraIdentifier.trim().length > 0
       ? { jiraIdentifier: raw.jiraIdentifier.trim() }
+      : {}),
+    ...(typeof raw.clickUpIdentifier === 'string' && raw.clickUpIdentifier.trim().length > 0
+      ? { clickUpIdentifier: raw.clickUpIdentifier.trim() }
       : {}),
     ...(typeof raw.repoId === 'string' && raw.repoId.trim().length > 0
       ? { repoId: raw.repoId.trim() }

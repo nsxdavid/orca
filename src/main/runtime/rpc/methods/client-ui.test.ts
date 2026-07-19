@@ -250,7 +250,10 @@ describe('client UI RPC methods', () => {
         githubItemsQuery: 'is:open',
         githubProjectHiddenFieldIdsByView: {
           'project-1:view-1': ['field-1']
-        }
+        },
+        clickUpViewId: 'view-1',
+        clickUpSubtaskMode: 'separate',
+        clickUpGroupDirection: 'descending'
       },
       workspaceCleanup: {
         dismissals: {
@@ -292,7 +295,10 @@ describe('client UI RPC methods', () => {
         githubItemsQuery: 'is:open',
         githubProjectHiddenFieldIdsByView: {
           'project-1:view-1': ['field-1']
-        }
+        },
+        clickUpViewId: 'view-1',
+        clickUpSubtaskMode: 'separate',
+        clickUpGroupDirection: 'descending'
       },
       workspaceCleanup: {
         dismissals: {

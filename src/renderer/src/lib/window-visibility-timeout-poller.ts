@@ -5,6 +5,7 @@ export type WindowVisibilityTimeoutPollerTimer = ReturnType<typeof setTimeout>
 export function installWindowVisibilityTimeoutPoller(args: {
   run: () => Promise<void> | void
   getDelayMs: () => number
+  runImmediately?: boolean
   setTimeoutFn?: (callback: () => void, delayMs: number) => WindowVisibilityTimeoutPollerTimer
   clearTimeoutFn?: (handle: WindowVisibilityTimeoutPollerTimer) => void
 }): () => void {
@@ -58,7 +59,11 @@ export function installWindowVisibilityTimeoutPoller(args: {
     }
   }
 
-  runAndSchedule()
+  if (args.runImmediately === false) {
+    schedulePoll()
+  } else {
+    runAndSchedule()
+  }
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('focus', reconcileVisibility)
   }
